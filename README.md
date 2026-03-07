@@ -8,7 +8,7 @@ A chess engine built from scratch in Python, with the long-term goal of one day 
 
 ### Requirements
 - Python 3.8 or higher
-- No external packages needed (yet)
+- No external Python packages needed
 
 ### Running the engine
 
@@ -16,7 +16,7 @@ A chess engine built from scratch in Python, with the long-term goal of one day 
 python run.py
 ```
 
-This starts Stepbot in UCI mode, ready to receive commands.
+Starts Stepbot in UCI mode, ready to receive commands.
 
 ### Running tests
 
@@ -32,31 +32,56 @@ Double-click `stepbot.bat` to launch without opening a terminal manually.
 
 ---
 
-## Connecting to a Chess GUI
+## Playing Against Stepbot in Lucas Chess
 
-Stepbot uses the **UCI protocol**, which means it works with any standard chess GUI.
+Stepbot works with any UCI-compatible chess GUI. The recommended option is **Lucas Chess** (free).
 
-**Recommended (free):** [Arena Chess](http://www.playwitharena.de/)
+### Step 1 — Compile the wrapper (one time only)
 
-1. Open Arena → Engines → Install New Engine
-2. Browse to `engine.py` (or `run.py`)
-3. Set the engine command to `python engine.py`
-4. Start a game!
+Stepbot needs a `.exe` file so Lucas Chess (or any other chess platform) can find it. The wrapper is a tiny file that just launches Python — you only need to compile it once.
+
+1. Install **MSYS2** from [msys2.org](https://www.msys2.org)
+2. Open the MSYS2 terminal and run:
+   ```
+   pacman -S mingw-w64-x86_64-gcc
+   ```
+3. Open a command prompt in your Stepbot_chess folder and run:
+   ```
+   g++ -o stepbot.exe stepbot_wrapper.cpp -m64 -static -lkernel32
+   ```
+4. `stepbot.exe` will appear in your folder
+
+After this, you never need to recompile — updating the Python files updates the engine automatically.
+
+### Step 2 — Add Stepbot to Lucas Chess
+
+1. Open Lucas Chess
+2. Go to **Engines → Manage engines**
+3. Click **Add** and browse to `stepbot.exe`
+4. Lucas Chess auto-detects it as a UCI engine
+5. Set depth or time controls as you like
+6. Start a game!
 
 ---
 
 ## Project Structure
 
 ```
-stepbot/
-├── run.py            ← Entry point — start here
-├── engine.py         ← UCI protocol interface
-├── board.py          ← Board representation and helpers
-├── movegen.py        ← Legal move generation
-├── evaluate.py       ← Position evaluation
-├── search.py         ← Alpha-beta search with iterative deepening
-├── stepbot.bat       ← Windows double-click launcher
-└── requirements.txt  ← Python dependencies
+Stepbot_chess/
+├── README.md               ← This file
+├── requirements.txt        ← Dependencies and build instructions
+├── stepbot.bat             ← Windows double-click launcher
+├── stepbot_wrapper.cpp     ← C++ source for the Lucas Chess wrapper
+├── stepbot.exe             ← Compiled wrapper (after you build it)
+├── run.py                  ← Main entry point
+├── engine.py               ← UCI protocol interface
+├── board.py                ← Board representation and helpers
+├── movegen.py              ← Legal move generation
+├── evaluate.py             ← Position evaluation
+├── search.py               ← Alpha-beta search with iterative deepening
+├── zobrist.py              ← Zobrist hashing for the transposition table
+├── book.py                 ← Opening book loader
+└── opening_book.json       ← Opening book data
 ```
 
 ---
@@ -64,67 +89,23 @@ stepbot/
 ## How It Works
 
 ### Board Representation
-The board is a mailbox array — a list of 64 integers, one per square.
-Positive numbers are White pieces, negative are Black, zero is empty.
+Mailbox array — a list of 64 integers. Positive = White, negative = Black, zero = empty.
 
 ### Move Generation
-Generates all legal moves for the side to move. Handles castling, en passant,
-and pawn promotion. Filters out moves that leave the king in check.
+Generates all legal moves including castling, en passant, and promotion. Filters moves that leave the king in check.
 
 ### Evaluation
-Scores a position in centipawns (100 = one pawn).
-Currently uses material values and piece-square tables.
+Scores positions in centipawns (100 = one pawn). Includes material, piece-square tables, pawn structure, king safety, piece mobility, and endgame detection.
 
 ### Search
-Alpha-beta pruning with iterative deepening and quiescence search.
-Searches 4 moves deep by default.
+Alpha-beta pruning with iterative deepening, quiescence search, transposition table (Zobrist hashing), killer moves, and history heuristic.
 
----
-
-## Roadmap
-
-### ✅ Phase 1 — Foundation
-- [x] Board representation
-- [x] Legal move generation (all pieces, castling, en passant, promotion)
-- [x] Alpha-beta search with iterative deepening
-- [x] Quiescence search
-- [x] Material + piece-square table evaluation
-- [x] UCI protocol
-
-### 🔲 Phase 2 — Play Stronger
-- [ ] Transposition table (Zobrist hashing)
-- [ ] Improved move ordering (killer moves, history heuristic)
-- [ ] Pawn structure evaluation (doubled, isolated, passed pawns)
-- [ ] King safety evaluation
-- [ ] Piece mobility evaluation
-- [ ] Basic endgame detection
-
-### 🔲 Phase 3 — Opening Book
-- [ ] JSON opening book
-- [ ] Self-play line weighting
-
-### 🔲 Phase 4 — Self-Play & Training
-- [ ] Self-play with PGN logging
-- [ ] Blunder detection and analysis
-- [ ] Evaluation weight tuning (Texel tuning)
-- [ ] ELO tracking
-
-### 🔲 Phase 5 — C++ Port
-- [ ] C++ move generator
-- [ ] C++ search and evaluation
-- [ ] Python/C++ UCI bridge
-
-### 🔲 Phase 6 — Advanced
-- [ ] Null move pruning
-- [ ] Late move reductions
-- [ ] Endgame tablebases
-- [ ] NNUE neural evaluation
+### Opening Book
+JSON book covering main lines for both colours — Sicilian, Ruy Lopez, King's Indian, Queen's Gambit, London System, French, and Caro-Kann. Uses weighted random selection for variety.
 
 ---
 
 ## UCI Commands
-
-Once running, Stepbot accepts these commands:
 
 | Command | Description |
 |---|---|
@@ -140,6 +121,51 @@ Once running, Stepbot accepts these commands:
 | `fen` | Print current FEN (debug) |
 | `moves` | List all legal moves (debug) |
 | `quit` | Exit |
+
+---
+
+## Roadmap
+
+### ✅ Phase 1 — Foundation
+- [x] Board representation
+- [x] Legal move generation (all pieces, castling, en passant, promotion)
+- [x] Alpha-beta search with iterative deepening
+- [x] Quiescence search
+- [x] Material + piece-square table evaluation
+- [x] UCI protocol
+
+### ✅ Phase 2 — Play Stronger
+- [x] Transposition table (Zobrist hashing)
+- [x] Improved move ordering (killer moves, history heuristic)
+- [x] Pawn structure evaluation (doubled, isolated, passed pawns)
+- [x] King safety evaluation
+- [x] Piece mobility evaluation
+- [x] Endgame detection
+
+### 🔄 Phase 3 — Opening Book
+- [x] JSON opening book
+- [ ] Self-play line weighting
+
+### 🔲 Phase 4 — Self-Play & Training
+- [ ] Self-play with PGN logging
+- [ ] Blunder detection and analysis
+- [ ] Evaluation weight tuning (Texel tuning)
+- [ ] ELO tracking
+
+### 🔲 Phase 4.5 — Windows Executable
+- [x] C++ wrapper source (stepbot_wrapper.cpp)
+- [ ] Compile stepbot.exe with MinGW (Optional for the user)
+
+### 🔲 Phase 5 — C++ Port
+- [ ] C++ move generator
+- [ ] C++ search and evaluation
+- [ ] Python/C++ UCI bridge
+
+### 🔲 Phase 6 — Advanced
+- [ ] Null move pruning
+- [ ] Late move reductions
+- [ ] Endgame tablebases
+- [ ] NNUE neural evaluation
 
 ---
 
