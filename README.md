@@ -115,7 +115,7 @@ JSON book covering main lines for both colours — Sicilian, Ruy Lopez, King's I
 | `position startpos` | Set up starting position |
 | `position startpos moves e2e4 e7e5` | Starting position + moves |
 | `position fen <fen>` | Set up from FEN string |
-| `go depth 4` | Search to depth 4 |
+| `go depth 4` | Search to depth 4. Replace 4 with any number. The higher the number, the better the move but the longer it takes to make a move.|
 | `go movetime 1000` | Search for 1 second |
 | `print` | Print the current board (debug) |
 | `fen` | Print current FEN (debug) |
