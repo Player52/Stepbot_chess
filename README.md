@@ -41,7 +41,7 @@ Stepbot works with any UCI-compatible chess GUI. The recommended option is **Luc
 Stepbot needs a `.exe` file so Lucas Chess (or any other chess platform) can find it. The wrapper is a tiny file that just launches Python — you only need to compile it once.
 
 1. Install **MSYS2** from [msys2.org](https://www.msys2.org)
-2. Open the MSYS2 terminal and run:
+2. Open the **MSYS2 MinGW x64** terminal and run:
    ```
    pacman -S mingw-w64-x86_64-gcc
    ```
@@ -68,20 +68,30 @@ After this, you never need to recompile — updating the Python files updates th
 
 ```
 Stepbot_chess/
-├── README.md               ← This file
-├── requirements.txt        ← Dependencies and build instructions
-├── stepbot.bat             ← Windows double-click launcher
-├── stepbot_wrapper.cpp     ← C++ source for the Lucas Chess wrapper
-├── stepbot.exe             ← Compiled wrapper (after you build it)
-├── run.py                  ← Main entry point
-├── engine.py               ← UCI protocol interface
-├── board.py                ← Board representation and helpers
-├── movegen.py              ← Legal move generation
-├── evaluate.py             ← Position evaluation
-├── search.py               ← Alpha-beta search with iterative deepening
-├── zobrist.py              ← Zobrist hashing for the transposition table
-├── book.py                 ← Opening book loader
-└── opening_book.json       ← Opening book data
+├── README.md                  ← This file
+├── stepbot.bat                ← Windows double-click launcher
+├── stepbot_wrapper.cpp        ← C++ source for the Lucas Chess wrapper
+├── stepbot.exe                ← Compiled wrapper (after you build it)
+├── run.py                     ← Main entry point
+├── engine.py                  ← UCI protocol interface
+├── board.py                   ← Board representation and helpers
+├── movegen.py                 ← Legal move generation
+├── evaluate.py                ← Position evaluation
+├── search.py                  ← Alpha-beta search with iterative deepening
+├── zobrist.py                 ← Zobrist hashing for the transposition table
+├── book.py                    ← Opening book loader
+├── opening_book.json          ← Opening book data
+├── selfplay.py                ← Self-play engine with ELO tracking
+├── analyse.py                 ← Blunder detection and game analysis
+├── tune.py                    ← Texel tuning for evaluation weights
+└── Self_play/
+    ├── selfplay.bat           ← Launch self-play sessions
+    ├── analyse.bat            ← Launch game analysis
+    ├── tune.bat               ← Launch Texel tuner
+    ├── selfplay_games.pgn     ← All self-play games (generated)
+    ├── selfplay_analysis.pgn  ← Annotated analysis (generated)
+    ├── elo_history.json       ← ELO rating history (generated)
+    └── tuned_weights.json     ← Tuned evaluation weights (generated)
 ```
 
 ---
@@ -101,7 +111,47 @@ Scores positions in centipawns (100 = one pawn). Includes material, piece-square
 Alpha-beta pruning with iterative deepening, quiescence search, transposition table (Zobrist hashing), killer moves, and history heuristic.
 
 ### Opening Book
-JSON book covering main lines for both colours — Sicilian, Ruy Lopez, King's Indian, Queen's Gambit, London System, French, and Caro-Kann. Uses weighted random selection for variety.
+JSON book covering main lines for both colours — Sicilian, Ruy Lopez, King's Indian, Queen's Gambit, London System, French, and Caro-Kann. Uses weighted random selection for variety. Weights update automatically after self-play sessions.
+
+### Self-Play & Training
+Stepbot can play against itself to improve over time. Each session logs games as PGN, updates opening book weights based on results, and tracks an ELO rating. Games can be analysed for blunders, mistakes, and inaccuracies, and evaluation weights can be tuned automatically using Texel tuning.
+
+---
+
+## Self-Play Tools
+
+### Running a self-play session
+
+Double-click `Self_play/selfplay.bat`, or run directly:
+
+```bash
+python selfplay.py                        # 10 games at depth 3
+python selfplay.py --games 20 --depth 4   # 20 games at depth 4
+python selfplay.py --no-update            # play without updating the book
+```
+
+### Analysing games
+
+Double-click `Self_play/analyse.bat`, or run directly:
+
+```bash
+python analyse.py                          # analyse selfplay_games.pgn at depth 3
+python analyse.py --depth 4               # more accurate, slower
+python analyse.py --input my_games.pgn    # analyse any PGN file
+```
+
+Outputs an annotated PGN to `Self_play/selfplay_analysis.pgn` that can be imported into chess.com or Lichess.
+
+### Texel tuning
+
+Double-click `Self_play/tune.bat`, or run directly:
+
+```bash
+python tune.py                    # 200 iterations from selfplay_games.pgn
+python tune.py --iterations 500   # deeper tuning
+```
+
+Saves optimised weights to `tuned_weights.json`. The more self-play games available, the better the tuning results.
 
 ---
 
@@ -115,7 +165,7 @@ JSON book covering main lines for both colours — Sicilian, Ruy Lopez, King's I
 | `position startpos` | Set up starting position |
 | `position startpos moves e2e4 e7e5` | Starting position + moves |
 | `position fen <fen>` | Set up from FEN string |
-| `go depth 4` | Search to depth 4. Replace 4 with any number. The higher the number, the better the move but the longer it takes to make a move.|
+| `go depth 4` | Search to depth 4. The higher the number, the stronger the move but the longer it takes. |
 | `go movetime 1000` | Search for 1 second |
 | `print` | Print the current board (debug) |
 | `fen` | Print current FEN (debug) |
@@ -142,19 +192,20 @@ JSON book covering main lines for both colours — Sicilian, Ruy Lopez, King's I
 - [x] Piece mobility evaluation
 - [x] Endgame detection
 
-### 🔄 Phase 3 — Opening Book
+### ✅ Phase 3 — Opening Book
 - [x] JSON opening book
-- [ ] Self-play line weighting
+- [x] Self-play line weighting
 
-### 🔲 Phase 4 — Self-Play & Training
-- [ ] Self-play with PGN logging
-- [ ] Blunder detection and analysis
-- [ ] Evaluation weight tuning (Texel tuning)
-- [ ] ELO tracking
+### ✅ Phase 4 — Self-Play & Training
+- [x] Self-play engine with PGN logging
+- [x] Blunder detection and analysis
+- [x] Texel tuning (evaluation weight tuning)
+- [x] ELO tracking
 
-### 🔲 Phase 4.5 — Windows Executable
+### ✅ Phase 4.5 — Windows Executable
 - [x] C++ wrapper source (stepbot_wrapper.cpp)
-- [ ] Compile stepbot.exe with MinGW (Optional for the user)
+- [x] Compiled stepbot.exe with MinGW
+- [x] Self-play / analyse / tune launchers
 
 ### 🔲 Phase 5 — C++ Port
 - [ ] C++ move generator
