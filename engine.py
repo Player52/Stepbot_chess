@@ -164,6 +164,10 @@ class UCIEngine:
         self.searcher = Searcher()
         self.depth    = 4  # Default search depth
 
+        # Opening book — loaded on startup
+        from book import OpeningBook
+        self.book = OpeningBook()
+
     def run(self):
         """Main loop — reads UCI commands from stdin."""
         while True:
@@ -283,6 +287,17 @@ class UCIEngine:
                    (tokens[i] == 'btime' and self.board.turn == BLACK):
                     time_limit = (ms / 1000.0) * 0.05
             i += 2
+
+        # ── Check opening book first ──
+        book_move = self.book.lookup(self.board)
+        if book_move:
+            promo = ''
+            if book_move.promotion:
+                promo_map = {KNIGHT: 'n', BISHOP: 'b', ROOK: 'r', QUEEN: 'q'}
+                promo = promo_map.get(book_move.promotion, '')
+            print(f"  [Book] Playing book move: {book_move}{promo}")
+            print(f"bestmove {book_move}{promo}")
+            return
 
         best_move = self.searcher.find_best_move(
             self.board, max_depth=depth, time_limit=time_limit
