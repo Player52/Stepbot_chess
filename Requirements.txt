@@ -1,10 +1,20 @@
-# Stepbot Chess Engine — Python dependencies
+# Stepbot Chess Engine — Dependencies
 #
-# Currently uses only Python standard library modules:
-#   - sys, os, time, copy
+# ── Python (runtime) ──
+# Python 3.8 or higher required.
+# No external Python packages needed — uses standard library only:
+#   sys, os, time, copy, json, random
 #
-# No external packages required for Phase 1.
-# This file will be updated as the project grows.
-#
-# To install future dependencies:
+# To install future Python dependencies:
 #   pip install -r requirements.txt
+
+# ── MinGW-w64 (build only — needed to compile stepbot.exe) ──
+# Only required once, to compile stepbot_wrapper.cpp into stepbot.exe.
+# Not needed to run the engine itself.
+#
+# Install via MSYS2 (recommended):
+#   https://www.msys2.org
+#   Then run: pacman -S mingw-w64-x86_64-gcc
+#
+# Compile command (run once in the Stepbot_chess folder):
+#   g++ -o stepbot.exe stepbot_wrapper.cpp -m64 -static -lkernel32
