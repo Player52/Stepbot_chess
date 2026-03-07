@@ -206,7 +206,7 @@ class Searcher:
           1. Captures (sorted by value of captured piece)
           2. Non-captures
         """
-        from board import PIECE_VALUES  # local import to avoid circular issues
+        from evaluate import PIECE_VALUES  # local import to avoid circular issues
 
         def move_score(move):
             target = board.get_piece(move.to_sq)
