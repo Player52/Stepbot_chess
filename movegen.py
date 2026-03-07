@@ -15,7 +15,8 @@
 from board import (
     Board, WHITE, BLACK, EMPTY,
     PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING,
-    square, file_of, rank_of, square_name
+    square, file_of, rank_of, square_name,
+    DIAGONAL_DIRS, STRAIGHT_DIRS, ALL_DIRS, KNIGHT_OFFSETS
 )
 
 # ─────────────────────────────────────────
@@ -41,24 +42,6 @@ class Move:
         return (self.from_sq == other.from_sq and
                 self.to_sq   == other.to_sq   and
                 self.promotion == other.promotion)
-
-
-# ─────────────────────────────────────────
-# DIRECTION VECTORS
-# ─────────────────────────────────────────
-# Chess squares are indexed 0-63 in rows of 8.
-# Moving one rank up   = +8
-# Moving one rank down = -8
-# Moving one file right = +1 (but only if we don't wrap around!)
-# Moving one file left  = -1
-
-# Sliding piece directions (bishop, rook, queen)
-DIAGONAL_DIRS   = [9, 7, -7, -9]   # Diagonals
-STRAIGHT_DIRS   = [8, -8, 1, -1]   # Ranks and files
-ALL_DIRS        = DIAGONAL_DIRS + STRAIGHT_DIRS
-
-# Knight move offsets
-KNIGHT_OFFSETS  = [17, 15, 10, 6, -6, -10, -15, -17]
 
 
 # ─────────────────────────────────────────
