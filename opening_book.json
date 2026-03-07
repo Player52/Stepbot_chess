@@ -1,10 +1,5 @@
 {
   "moves": [
-
-    // ─────────────────────────────────────────
-    // MOVE 1 — WHITE'S FIRST MOVE
-    // ─────────────────────────────────────────
-
     {
       "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
       "move": "e2e4",
@@ -20,77 +15,56 @@
       "move": "c2c4",
       "weight": 4
     },
-
-    // ─────────────────────────────────────────
-    // AFTER 1.e4 — BLACK'S REPLIES
-    // ─────────────────────────────────────────
-
-    // Sicilian Defence (1...c5) — aggressive, most popular reply to e4
     {
       "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
       "move": "c7c5",
       "weight": 10
     },
-    // French Defence (1...e6) — solid, slightly passive
     {
       "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
       "move": "e7e6",
       "weight": 6
     },
-    // Caro-Kann (1...c6) — solid and reliable
     {
       "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
       "move": "c7c6",
       "weight": 5
     },
-    // 1...e5 — Open game, classical
     {
       "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
       "move": "e7e5",
       "weight": 8
     },
-
-    // ─────────────────────────────────────────
-    // SICILIAN DEFENCE — 1.e4 c5
-    // ─────────────────────────────────────────
-
-    // White plays 2.Nf3 (most common)
     {
       "fen": "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 2",
       "move": "g1f3",
       "weight": 10
     },
-    // Black plays 2...d6 (heading for Najdorf or Dragon)
     {
       "fen": "rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
       "move": "d7d6",
       "weight": 8
     },
-    // Black plays 2...Nc6 (heading for Classical or Rauzer)
     {
       "fen": "rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
       "move": "b8c6",
       "weight": 6
     },
-    // White plays 3.d4 (Open Sicilian)
     {
       "fen": "rnbqkbnr/pp2pppp/3p4/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 3",
       "move": "d2d4",
       "weight": 10
     },
-    // Black recaptures 3...cxd4
     {
       "fen": "rnbqkbnr/pp2pppp/3p4/2p5/3PP3/5N2/PPP2PPP/RNBQKB1R b KQkq d3 0 3",
       "move": "c5d4",
       "weight": 10
     },
-    // White recaptures 4.Nxd4
     {
       "fen": "rnbqkbnr/pp2pppp/3p4/8/3pP3/5N2/PPP2PPP/RNBQKB1R w KQkq - 0 4",
       "move": "f3d4",
       "weight": 10
     },
-    // Najdorf: 4...Nf6 5.Nc3 a6
     {
       "fen": "rnbqkbnr/pp2pppp/3p4/8/3NP3/8/PPP2PPP/RNBQKB1R b KQkq - 0 4",
       "move": "g8f6",
@@ -101,42 +75,31 @@
       "move": "a7a6",
       "weight": 10
     },
-
-    // ─────────────────────────────────────────
-    // OPEN GAME — 1.e4 e5
-    // ─────────────────────────────────────────
-
-    // White 2.Nf3 (most common — attacks e5)
     {
       "fen": "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2",
       "move": "g1f3",
       "weight": 10
     },
-    // Black 2...Nc6 (defends e5)
     {
       "fen": "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
       "move": "b8c6",
       "weight": 10
     },
-    // White 3.Bb5 — Ruy Lopez (most classical and respected opening)
     {
       "fen": "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
       "move": "f1b5",
       "weight": 8
     },
-    // White 3.Bc4 — Italian Game
     {
       "fen": "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
       "move": "f1c4",
       "weight": 6
     },
-    // Ruy Lopez: 3...a6 (Morphy Defence)
     {
       "fen": "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3",
       "move": "a7a6",
       "weight": 10
     },
-    // Ruy Lopez: 4.Ba4 Nf6
     {
       "fen": "r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4",
       "move": "b5a4",
@@ -147,159 +110,116 @@
       "move": "g8f6",
       "weight": 10
     },
-    // Ruy Lopez: 5.O-O (castle early — standard)
     {
       "fen": "r1bqkb1r/1ppp1ppp/p1n2n2/4p3/B3P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 2 5",
       "move": "e1g1",
       "weight": 10
     },
-
-    // ─────────────────────────────────────────
-    // AFTER 1.d4 — BLACK'S REPLIES
-    // ─────────────────────────────────────────
-
-    // King's Indian Defence (1...Nf6) — dynamic and aggressive
     {
       "fen": "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3 0 1",
       "move": "g8f6",
       "weight": 8
     },
-    // Queen's Gambit Declined (1...d5)
     {
       "fen": "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3 0 1",
       "move": "d7d5",
       "weight": 7
     },
-    // Nimzo-Indian (1...d5 then ...Nf6 ...e6 ...Bb4)
     {
       "fen": "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3 0 1",
       "move": "e7e6",
       "weight": 4
     },
-
-    // ─────────────────────────────────────────
-    // KING'S INDIAN DEFENCE — 1.d4 Nf6
-    // ─────────────────────────────────────────
-
-    // White 2.c4
     {
       "fen": "rnbqkb1r/pppppppp/5n2/8/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 1 2",
       "move": "c2c4",
       "weight": 10
     },
-    // Black 2...g6
     {
       "fen": "rnbqkb1r/pppppppp/5n2/8/2PP4/8/PP2PPPP/RNBQKBNR b KQkq c3 0 2",
       "move": "g7g6",
       "weight": 10
     },
-    // White 3.Nc3
     {
       "fen": "rnbqkb1r/pppppp1p/5np1/8/2PP4/8/PP2PPPP/RNBQKBNR w KQkq - 0 3",
       "move": "b1c3",
       "weight": 10
     },
-    // Black 3...Bg7
     {
       "fen": "rnbqkb1r/pppppp1p/5np1/8/2PP4/2N5/PP2PPPP/R1BQKBNR b KQkq - 1 3",
       "move": "f8g7",
       "weight": 10
     },
-    // White 4.e4
     {
       "fen": "rnbqk2r/ppppppbp/5np1/8/2PP4/2N5/PP2PPPP/R1BQKBNR w KQkq - 2 4",
       "move": "e2e4",
       "weight": 10
     },
-    // Black 4...d6
     {
       "fen": "rnbqk2r/ppppppbp/5np1/8/2PPP3/2N5/PP3PPP/R1BQKBNR b KQkq e3 0 4",
       "move": "d7d6",
       "weight": 10
     },
-    // White 5.Nf3
     {
       "fen": "rnbqk2r/ppp1ppbp/3p1np1/8/2PPP3/2N5/PP3PPP/R1BQKBNR w KQkq - 0 5",
       "move": "g1f3",
       "weight": 10
     },
-    // Black 5...O-O
     {
       "fen": "rnbqk2r/ppp1ppbp/3p1np1/8/2PPP3/2N2N2/PP3PPP/R1BQKB1R b KQkq - 1 5",
       "move": "e8g8",
       "weight": 10
     },
-    // White 6.Be2 (Classical KID)
     {
       "fen": "rnbq1rk1/ppp1ppbp/3p1np1/8/2PPP3/2N2N2/PP3PPP/R1BQKB1R w KQ - 2 6",
       "move": "f1e2",
       "weight": 8
     },
-    // White 6.Be3 (Averbakh variation)
     {
       "fen": "rnbq1rk1/ppp1ppbp/3p1np1/8/2PPP3/2N2N2/PP3PPP/R1BQKB1R w KQ - 2 6",
       "move": "c1e3",
       "weight": 4
     },
-
-    // ─────────────────────────────────────────
-    // QUEEN'S GAMBIT — 1.d4 d5 2.c4
-    // ─────────────────────────────────────────
-
-    // White 2.c4 (Queen's Gambit)
     {
       "fen": "rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq d6 0 2",
       "move": "c2c4",
       "weight": 10
     },
-    // QGD: 2...e6
     {
       "fen": "rnbqkbnr/ppp1pppp/8/3p4/2PP4/8/PP2PPPP/RNBQKBNR b KQkq c3 0 2",
       "move": "e7e6",
       "weight": 8
     },
-    // QGA: 2...dxc4
     {
       "fen": "rnbqkbnr/ppp1pppp/8/3p4/2PP4/8/PP2PPPP/RNBQKBNR b KQkq c3 0 2",
       "move": "d5c4",
       "weight": 5
     },
-    // Slav: 2...c6
     {
       "fen": "rnbqkbnr/ppp1pppp/8/3p4/2PP4/8/PP2PPPP/RNBQKBNR b KQkq c3 0 2",
       "move": "c7c6",
       "weight": 6
     },
-    // QGD: 3.Nc3
     {
       "fen": "rnbqkbnr/ppp2ppp/4p3/3p4/2PP4/8/PP2PPPP/RNBQKBNR w KQkq - 0 3",
       "move": "b1c3",
       "weight": 10
     },
-    // QGD: 3...Nf6
     {
       "fen": "rnbqkbnr/ppp2ppp/4p3/3p4/2PP4/2N5/PP2PPPP/R1BQKBNR b KQkq - 1 3",
       "move": "g8f6",
       "weight": 10
     },
-    // QGD: 4.Bg5 (classical — pins the knight)
     {
       "fen": "rnbqkb1r/ppp2ppp/4pn2/3p4/2PP4/2N5/PP2PPPP/R1BQKBNR w KQkq - 2 4",
       "move": "c1g5",
       "weight": 8
     },
-    // QGD: 4.Nf3
     {
       "fen": "rnbqkb1r/ppp2ppp/4pn2/3p4/2PP4/2N5/PP2PPPP/R1BQKBNR w KQkq - 2 4",
       "move": "g1f3",
       "weight": 6
     },
-
-    // ─────────────────────────────────────────
-    // LONDON SYSTEM — 1.d4 d5 2.Nf3 Nf6 3.Bf4
-    // Solid and easy to play, good for Stepbot
-    // ─────────────────────────────────────────
-
     {
       "fen": "rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq d6 0 2",
       "move": "g1f3",
@@ -330,71 +250,51 @@
       "move": "f1d3",
       "weight": 8
     },
-
-    // ─────────────────────────────────────────
-    // FRENCH DEFENCE — 1.e4 e6
-    // ─────────────────────────────────────────
-
-    // White 2.d4
     {
       "fen": "rnbqkbnr/pppp1ppp/4p3/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
       "move": "d2d4",
       "weight": 10
     },
-    // Black 2...d5
     {
       "fen": "rnbqkbnr/pppp1ppp/4p3/8/3PP3/8/PPP2PPP/RNBQKBNR b KQkq d3 0 2",
       "move": "d7d5",
       "weight": 10
     },
-    // White 3.Nc3 (Classical)
     {
       "fen": "rnbqkbnr/ppp2ppp/4p3/3p4/3PP3/8/PPP2PPP/RNBQKBNR w KQkq - 0 3",
       "move": "b1c3",
       "weight": 8
     },
-    // White 3.e5 (Advance variation)
     {
       "fen": "rnbqkbnr/ppp2ppp/4p3/3p4/3PP3/8/PPP2PPP/RNBQKBNR w KQkq - 0 3",
       "move": "e4e5",
       "weight": 6
     },
-    // French Classical: 3...Nf6
     {
       "fen": "rnbqkbnr/ppp2ppp/4p3/3p4/3PP3/2N5/PPP2PPP/R1BQKBNR b KQkq - 1 3",
       "move": "g8f6",
       "weight": 8
     },
-
-    // ─────────────────────────────────────────
-    // CARO-KANN — 1.e4 c6
-    // ─────────────────────────────────────────
-
-    // White 2.d4
     {
       "fen": "rnbqkbnr/pp1ppppp/2p5/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
       "move": "d2d4",
       "weight": 10
     },
-    // Black 2...d5
     {
       "fen": "rnbqkbnr/pp1ppppp/2p5/8/3PP3/8/PPP2PPP/RNBQKBNR b KQkq d3 0 2",
       "move": "d7d5",
       "weight": 10
     },
-    // White 3.Nc3
     {
       "fen": "rnbqkbnr/pp2pppp/2p5/3p4/3PP3/8/PPP2PPP/RNBQKBNR w KQkq - 0 3",
       "move": "b1c3",
       "weight": 6
     },
-    // White 3.e5 (Advance)
     {
       "fen": "rnbqkbnr/pp2pppp/2p5/3p4/3PP3/8/PPP2PPP/RNBQKBNR w KQkq - 0 3",
       "move": "e4e5",
       "weight": 6
     },
-    // Caro-Kann Classical: 3...dxe4
     {
       "fen": "rnbqkbnr/pp2pppp/2p5/3p4/3PP3/2N5/PPP2PPP/R1BQKBNR b KQkq - 1 3",
       "move": "d5e4",
