@@ -32,6 +32,16 @@ PIECE_SYMBOLS = {
 }
 
 # ─────────────────────────────────────────
+# DIRECTION CONSTANTS
+# Shared across movegen, evaluate, and zobrist.
+# ─────────────────────────────────────────
+
+DIAGONAL_DIRS  = [9, 7, -7, -9]
+STRAIGHT_DIRS  = [8, -8, 1, -1]
+ALL_DIRS       = DIAGONAL_DIRS + STRAIGHT_DIRS
+KNIGHT_OFFSETS = [17, 15, 10, 6, -6, -10, -15, -17]
+
+# ─────────────────────────────────────────
 # HELPER FUNCTIONS
 # ─────────────────────────────────────────
 
