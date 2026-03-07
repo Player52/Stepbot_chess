@@ -2,7 +2,7 @@
 # Self-play engine for Stepbot.
 #
 # Makes Stepbot play against itself, records results, updates
-# opening book weights, and saves games as PGN.
+# opening book weights, tracks ELO, and saves PGN logs.
 #
 # Usage:
 #   python selfplay.py              -- plays 10 games at depth 3
@@ -14,6 +14,8 @@ import sys
 import os
 import argparse
 import datetime
+import json
+import math
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -25,11 +27,17 @@ from search import Searcher
 from book import OpeningBook
 
 STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-MAX_MOVES    = 200
 
-# PGN file lives in the Self_play folder next to this script
-PGN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        'Self_play', 'selfplay_games.pgn')
+MAX_MOVES = 200
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+PGN_PATH = os.path.join(SCRIPT_DIR, 'Self_play', 'selfplay_games.pgn')
+ELO_PATH = os.path.join(SCRIPT_DIR, 'Self_play', 'elo_history.json')
+
+# ELO settings
+ELO_K          = 32      # K-factor — how much each game shifts the rating
+ELO_DEFAULT    = 1200    # Starting ELO if no history exists
 
 
 # ─────────────────────────────────────────
@@ -60,75 +68,56 @@ def _fen_core(board):
 
 
 # ─────────────────────────────────────────
-# PGN MOVE CONVERSION
+# UCI -> SAN CONVERTER
 # ─────────────────────────────────────────
 
-PIECE_LETTER = {
-    KNIGHT: 'N',
-    BISHOP: 'B',
-    ROOK:   'R',
-    QUEEN:  'Q',
-    KING:   'K',
-}
+PIECE_LETTERS = {KNIGHT: 'N', BISHOP: 'B', ROOK: 'R', QUEEN: 'Q', KING: 'K'}
 
 def move_to_san(board, move, gen):
-    """Convert a Move to Standard Algebraic Notation. Call BEFORE applying the move."""
     piece      = board.get_piece(move.from_sq)
     piece_type = abs(piece)
-    colour     = board.turn
+    from_name  = square_name(move.from_sq)
     to_name    = square_name(move.to_sq)
-    from_file  = 'abcdefgh'[file_of(move.from_sq)]
-    from_rank  = str(rank_of(move.from_sq) + 1)
 
-    # Castling
     if piece_type == KING:
         diff = move.to_sq - move.from_sq
-        if diff == 2:
-            return _append_check(board, move, gen, 'O-O')
-        if diff == -2:
-            return _append_check(board, move, gen, 'O-O-O')
+        if diff == 2:  return 'O-O'
+        if diff == -2: return 'O-O-O'
 
-    # Pawn moves
+    is_capture = (not board.is_empty(move.to_sq) or
+                  move.to_sq == board.en_passant_sq)
+
     if piece_type == PAWN:
-        is_capture = (not board.is_empty(move.to_sq)) or (move.to_sq == board.en_passant_sq)
-        san = (from_file + 'x' + to_name) if is_capture else to_name
+        san = (from_name[0] + 'x' + to_name) if is_capture else to_name
         if move.promotion:
-            san += '=' + PIECE_LETTER.get(move.promotion, 'Q')
-        return _append_check(board, move, gen, san)
+            promo_map = {KNIGHT: 'N', BISHOP: 'B', ROOK: 'R', QUEEN: 'Q'}
+            san += '=' + promo_map.get(move.promotion, 'Q')
+    else:
+        piece_letter = PIECE_LETTERS.get(piece_type, '')
+        legal_moves  = gen.generate_legal_moves(board)
+        ambiguous    = [
+            m for m in legal_moves
+            if m.to_sq == move.to_sq
+            and m.from_sq != move.from_sq
+            and abs(board.get_piece(m.from_sq)) == piece_type
+        ]
+        disambig = ''
+        if ambiguous:
+            same_file = [m for m in ambiguous if file_of(m.from_sq) == file_of(move.from_sq)]
+            same_rank = [m for m in ambiguous if rank_of(m.from_sq) == rank_of(move.from_sq)]
+            if not same_file:
+                disambig = from_name[0]
+            elif not same_rank:
+                disambig = from_name[1]
+            else:
+                disambig = from_name
+        san = piece_letter + disambig + ('x' if is_capture else '') + to_name
 
-    # Piece moves
-    letter      = PIECE_LETTER.get(piece_type, '')
-    legal_moves = gen.generate_legal_moves(board)
-    ambiguous   = [m for m in legal_moves
-                   if m != move
-                   and abs(board.get_piece(m.from_sq)) == piece_type
-                   and board.colour_at(m.from_sq) == colour
-                   and m.to_sq == move.to_sq]
-
-    disambig = ''
-    if ambiguous:
-        same_file = any(file_of(m.from_sq) == file_of(move.from_sq) for m in ambiguous)
-        same_rank = any(rank_of(m.from_sq) == rank_of(move.from_sq) for m in ambiguous)
-        if not same_file:
-            disambig = from_file
-        elif not same_rank:
-            disambig = from_rank
-        else:
-            disambig = from_file + from_rank
-
-    capture_str = 'x' if not board.is_empty(move.to_sq) else ''
-    san = letter + disambig + capture_str + to_name
-    return _append_check(board, move, gen, san)
-
-
-def _append_check(board, move, gen, san):
-    """Append + for check or # for checkmate."""
     new_board = gen._apply_move(board, move)
     if gen._king_in_check(new_board, new_board.turn):
-        if not gen.generate_legal_moves(new_board):
-            san += '#'
-        else:
-            san += '+'
+        follow_up = gen.generate_legal_moves(new_board)
+        san += '#' if not follow_up else '+'
+
     return san
 
 
@@ -136,12 +125,12 @@ def _append_check(board, move, gen, san):
 # PGN WRITER
 # ─────────────────────────────────────────
 
-def build_pgn(game_number, result, san_moves, date_str):
-    """Build a PGN string for one game."""
+def write_pgn(game_number, result, san_moves, date_str):
     result_str = {1: '1-0', -1: '0-1', 0: '1/2-1/2'}.get(result, '*')
+
     lines = [
-        f'[Event "Stepbot Self-Play"]',
-        f'[Site "Local"]',
+        f'[Event "Stepbot Self-Play Game {game_number}"]',
+        f'[Site "Stepbot"]',
         f'[Date "{date_str}"]',
         f'[Round "{game_number}"]',
         f'[White "Stepbot"]',
@@ -149,6 +138,7 @@ def build_pgn(game_number, result, san_moves, date_str):
         f'[Result "{result_str}"]',
         '',
     ]
+
     move_text = ''
     for i, san in enumerate(san_moves):
         if i % 2 == 0:
@@ -156,39 +146,113 @@ def build_pgn(game_number, result, san_moves, date_str):
         move_text += san + ' '
     move_text += result_str
 
-    words = move_text.split()
-    line  = ''
+    words, line, wrapped = move_text.split(), '', []
     for word in words:
         if len(line) + len(word) + 1 > 80:
-            lines.append(line.rstrip())
+            wrapped.append(line.rstrip())
             line = word + ' '
         else:
             line += word + ' '
     if line.strip():
-        lines.append(line.rstrip())
+        wrapped.append(line.rstrip())
 
+    lines.extend(wrapped)
     lines.append('')
-    return '\n'.join(lines) + '\n'
+    lines.append('')
 
-
-def save_pgn(pgn_str):
-    """Append a PGN game to selfplay_games.pgn."""
     os.makedirs(os.path.dirname(PGN_PATH), exist_ok=True)
-    with open(PGN_PATH, 'a') as f:
-        f.write(pgn_str)
+    with open(PGN_PATH, 'a', encoding='utf-8') as f:
+        f.write('\n'.join(lines) + '\n')
+
+
+# ─────────────────────────────────────────
+# ELO TRACKING
+# ─────────────────────────────────────────
+
+def load_elo():
+    """Load ELO history from JSON. Returns (current_elo, history_list)."""
+    if not os.path.exists(ELO_PATH):
+        return ELO_DEFAULT, []
+    try:
+        with open(ELO_PATH, 'r') as f:
+            data = json.load(f)
+        return data.get('current_elo', ELO_DEFAULT), data.get('history', [])
+    except Exception:
+        return ELO_DEFAULT, []
+
+
+def save_elo(current_elo, history):
+    """Save ELO history to JSON."""
+    os.makedirs(os.path.dirname(ELO_PATH), exist_ok=True)
+    with open(ELO_PATH, 'w') as f:
+        json.dump({'current_elo': current_elo, 'history': history}, f, indent=2)
+
+
+def expected_score(rating_a, rating_b):
+    """Expected score for player A against player B."""
+    return 1.0 / (1.0 + math.pow(10, (rating_b - rating_a) / 400.0))
+
+
+def update_elo(current_elo, results):
+    """
+    Update ELO based on a list of game results.
+    Since both sides are Stepbot, we treat it as Stepbot playing against itself.
+    We track the White side's ELO as the canonical rating —
+    a win as White = improvement, a win as Black = same engine so still improves,
+    draws = stable.
+
+    In practice we just measure: did the engine play well overall?
+    Win = +, Draw = neutral, Loss as White = slight -.
+    """
+    elo = float(current_elo)
+
+    for result in results:
+        # Both players have the same rating — expected score is always 0.5
+        expected = 0.5
+
+        # Actual score from White's perspective
+        if result == 1:
+            actual = 1.0   # White won
+        elif result == -1:
+            actual = 0.0   # Black won (White lost)
+        else:
+            actual = 0.5   # Draw
+
+        elo += ELO_K * (actual - expected)
+
+    return round(elo, 1)
+
+
+def print_elo_history(history, current_elo):
+    """Print a formatted ELO history table."""
+    print()
+    print("  ELO History")
+    print("  " + "─" * 45)
+    print(f"  {'Session':<10} {'Date':<14} {'ELO':>7} {'Change':>8}")
+    print("  " + "─" * 45)
+
+    for entry in history[-10:]:   # Show last 10 sessions
+        change_str = f"{entry['change']:+.1f}" if entry['change'] != 0 else "  —"
+        print(f"  {entry['session']:<10} {entry['date']:<14} "
+              f"{entry['elo']:>7.1f} {change_str:>8}")
+
+    print("  " + "─" * 45)
+    print(f"  {'Current ELO:':<24} {current_elo:>7.1f}")
+    print()
 
 
 # ─────────────────────────────────────────
 # SINGLE GAME
 # ─────────────────────────────────────────
 
-def play_game(searcher, gen, book, depth, game_number, verbose=True):
+def play_game(searcher, gen, book, depth, game_number, date_str, verbose=True):
     board            = board_from_fen(STARTING_FEN)
     position_history = []
     book_moves       = []
     san_moves        = []
     in_book          = True
     move_count       = 0
+    result           = 0
 
     if verbose:
         print(f"\n  Game {game_number}:", end=" ", flush=True)
@@ -203,12 +267,13 @@ def play_game(searcher, gen, book, depth, game_number, verbose=True):
         book_move   = book.lookup(board) if in_book else None
 
         if book_move:
+            san = move_to_san(board, book_move, gen)
+            san_moves.append(san)
             move_uci = str(book_move)
             if book_move.promotion:
                 promo_map = {2: 'n', 3: 'b', 4: 'r', 5: 'q'}
                 move_uci += promo_map.get(book_move.promotion, '')
             book_moves.append((current_fen, move_uci))
-            san_moves.append(move_to_san(board, book_move, gen))
             board = gen._apply_move(board, book_move)
             if verbose:
                 print("B", end="", flush=True)
@@ -218,7 +283,8 @@ def play_game(searcher, gen, book, depth, game_number, verbose=True):
             if best_move is None:
                 result = 0
                 break
-            san_moves.append(move_to_san(board, best_move, gen))
+            san = move_to_san(board, best_move, gen)
+            san_moves.append(san)
             board = gen._apply_move(board, best_move)
             if verbose:
                 print(".", end="", flush=True)
@@ -229,7 +295,8 @@ def play_game(searcher, gen, book, depth, game_number, verbose=True):
         result_str = {1: "White wins", -1: "Black wins", 0: "Draw"}.get(result, "?")
         print(f" {result_str} ({move_count} moves)")
 
-    return result, book_moves, san_moves
+    write_pgn(game_number, result, san_moves, date_str)
+    return result, book_moves
 
 
 # ─────────────────────────────────────────
@@ -243,30 +310,28 @@ def run_session(num_games=10, depth=3, update_book=True):
     print(f"  Games      : {num_games}")
     print(f"  Depth      : {depth}")
     print(f"  Book update: {'yes' if update_book else 'no'}")
-    print(f"  PGN file   : {PGN_PATH}")
+    print(f"  PGN output : {PGN_PATH}")
     print()
 
     gen      = MoveGenerator()
     searcher = Searcher()
     book     = OpeningBook()
 
+    date_str       = datetime.date.today().strftime('%Y.%m.%d')
     results        = {1: 0, -1: 0, 0: 0}
+    all_results    = []
     all_book_moves = []
-    date_str       = datetime.date.today().strftime("%Y.%m.%d")
 
     for i in range(1, num_games + 1):
-        result, book_moves, san_moves = play_game(
-            searcher, gen, book, depth, i, verbose=True
+        result, book_moves = play_game(
+            searcher, gen, book, depth, i, date_str, verbose=True
         )
         results[result] = results.get(result, 0) + 1
-
+        all_results.append(result)
         for fen, move_uci in book_moves:
             all_book_moves.append((fen, move_uci, result))
 
-        pgn = build_pgn(i, result, san_moves, date_str)
-        save_pgn(pgn)
-
-    # Summary
+    # ── Results summary ──
     print()
     print("=" * 55)
     print("  Results")
@@ -281,7 +346,7 @@ def run_session(num_games=10, depth=3, update_book=True):
     print(f"  Draw rate      : {draw_rate:.0f}%")
     print(f"\n  Games saved to : {PGN_PATH}")
 
-    # Update opening book
+    # ── Update opening book ──
     if update_book and all_book_moves:
         print()
         print("  Updating opening book weights...")
@@ -293,6 +358,31 @@ def run_session(num_games=10, depth=3, update_book=True):
         book.save()
         print("  Opening book saved.")
 
+    # ── ELO tracking ──
+    print()
+    print("  Updating ELO...")
+    current_elo, history = load_elo()
+    old_elo     = current_elo
+    current_elo = update_elo(current_elo, all_results)
+    change      = current_elo - old_elo
+
+    session_number = len(history) + 1
+    history.append({
+        'session': session_number,
+        'date':    date_str,
+        'elo':     current_elo,
+        'change':  round(change, 1),
+        'games':   num_games,
+        'wins':    results.get(1, 0),
+        'draws':   results.get(0, 0),
+        'losses':  results.get(-1, 0),
+    })
+
+    save_elo(current_elo, history)
+    print_elo_history(history, current_elo)
+
+    change_str = f"{change:+.1f}" if change != 0 else "no change"
+    print(f"  ELO: {old_elo:.1f} → {current_elo:.1f} ({change_str})")
     print()
     print("  Session complete!")
     print("=" * 55)
@@ -316,4 +406,4 @@ if __name__ == "__main__":
         num_games   = args.games,
         depth       = args.depth,
         update_book = not args.no_update,
-    )
+      )
