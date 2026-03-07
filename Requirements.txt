@@ -1,0 +1,10 @@
+# Stepbot Chess Engine — Python dependencies
+#
+# Currently uses only Python standard library modules:
+#   - sys, os, time, copy
+#
+# No external packages required for Phase 1.
+# This file will be updated as the project grows.
+#
+# To install future dependencies:
+#   pip install -r requirements.txt
