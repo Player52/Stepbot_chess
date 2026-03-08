@@ -162,6 +162,7 @@ struct UCIEngine {
     Board    board;
     Searcher searcher;
     int      default_depth = 9;
+    int      max_depth     = 9;   // User-configurable via setoption
 
     UCIEngine() : board(board_from_fen(STARTING_FEN)) {}
 
@@ -180,6 +181,7 @@ struct UCIEngine {
         if      (cmd == "uci")        cmd_uci();
         else if (cmd == "isready")    cmd_isready();
         else if (cmd == "ucinewgame") cmd_ucinewgame();
+        else if (cmd == "setoption")  cmd_setoption(tokens);
         else if (cmd == "position")   cmd_position(tokens);
         else if (cmd == "go")         cmd_go(tokens);
         else if (cmd == "stop")       { searcher.time_limit = 0; }
@@ -197,9 +199,31 @@ struct UCIEngine {
     void cmd_uci() {
         std::cout << "id name "   << ENGINE_NAME   << "\n";
         std::cout << "id author " << ENGINE_AUTHOR << "\n";
-        std::cout << "option name Depth type spin default 4 min 1 max 20\n";
+        // MaxDepth: caps the search depth regardless of time controls
+        // Default 9 — fast enough for timed games, strong enough to play well
+        std::cout << "option name MaxDepth type spin default 9 min 1 max 20\n";
         std::cout << "uciok\n";
         std::cout.flush();
+    }
+
+    void cmd_setoption(const std::vector<std::string>& tokens) {
+        // UCI setoption format: setoption name <name> value <value>
+        // We scan for "name" and "value" keywords in the token list
+        std::string opt_name, opt_value;
+        for (int i = 1; i < (int)tokens.size(); i++) {
+            if (tokens[i] == "name"  && i + 1 < (int)tokens.size())
+                opt_name  = tokens[++i];
+            if (tokens[i] == "value" && i + 1 < (int)tokens.size())
+                opt_value = tokens[++i];
+        }
+
+        if (opt_name == "MaxDepth" && !opt_value.empty()) {
+            int val  = std::stoi(opt_value);
+            // Clamp to valid range
+            val      = std::max(1, std::min(20, val));
+            max_depth = val;
+            std::cerr << "  [Option] MaxDepth set to " << max_depth << "\n";
+        }
     }
 
     void cmd_isready() {
@@ -234,7 +258,9 @@ struct UCIEngine {
     }
 
     void cmd_go(const std::vector<std::string>& tokens) {
-        int    depth    = 99;
+        // Start with max_depth as ceiling — can be lowered by "go depth N"
+        // but never raised above max_depth
+        int    depth    = max_depth;
         int    wtime    = -1, btime = -1, winc = 0, binc = 0, movetime = -1;
         bool   infinite = false;
 
@@ -242,7 +268,7 @@ struct UCIEngine {
             auto get_next_int = [&]() {
                 return (i + 1 < (int)tokens.size()) ? std::stoi(tokens[++i]) : 0;
             };
-            if      (tokens[i] == "depth")    { depth    = get_next_int(); }
+            if      (tokens[i] == "depth")    { depth    = std::min(get_next_int(), max_depth); }
             else if (tokens[i] == "movetime") { movetime = get_next_int(); }
             else if (tokens[i] == "wtime")    { wtime    = get_next_int(); }
             else if (tokens[i] == "btime")    { btime    = get_next_int(); }
@@ -251,6 +277,7 @@ struct UCIEngine {
             else if (tokens[i] == "infinite") { infinite = true; }
         }
 
+        // "infinite" ignores max_depth — used for analysis mode
         if (infinite) depth = 99;
 
         std::string book_move = book_lookup(board);
