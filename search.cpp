@@ -47,21 +47,29 @@ std::pair<double,double> Searcher::allocate_time(int time_budget_ms,
     double remaining_secs = time_budget_ms / 1000.0;
     double inc_secs       = inc_ms / 1000.0;
 
+    // Estimate moves remaining — be conservative to preserve time
     int estimated_moves;
-    if      (fullmove_number < 10)  estimated_moves = 40;
-    else if (fullmove_number < 30)  estimated_moves = 30;
-    else if (fullmove_number < 50)  estimated_moves = 20;
-    else                            estimated_moves = 15;
+    if      (fullmove_number < 10)  estimated_moves = 45;
+    else if (fullmove_number < 20)  estimated_moves = 35;
+    else if (fullmove_number < 35)  estimated_moves = 25;
+    else if (fullmove_number < 50)  estimated_moves = 18;
+    else                            estimated_moves = 12;
 
     if (moves_to_go > 0) estimated_moves = moves_to_go;
 
-    double soft     = (remaining_secs / estimated_moves) + inc_secs * 0.8;
-    double max_soft = remaining_secs * 0.10;
-    soft = std::min(soft, max_soft);
-    soft = std::max(soft, 0.1);
+    // Base time per move
+    double soft = (remaining_secs / estimated_moves) + inc_secs * 0.7;
 
-    double hard = std::min(soft * 3.0, remaining_secs * 0.20);
-    hard = std::max(hard, soft + 0.1);
+    // Hard cap: never spend more than 8% of remaining time on one move
+    // (down from 10% — more conservative to avoid flagging)
+    double max_soft = remaining_secs * 0.08;
+    soft = std::min(soft, max_soft);
+    soft = std::max(soft, 0.1);   // At least 100ms
+
+    // Hard limit: 2.5x soft, capped at 15% of remaining
+    // (tighter than before — prevents runaway searches)
+    double hard = std::min(soft * 2.5, remaining_secs * 0.15);
+    hard = std::max(hard, soft + 0.05);
 
     return {soft, hard};
 }
@@ -176,7 +184,8 @@ Move Searcher::find_best_move(const Board& board, int max_depth,
                   << "\n";
         std::cout.flush();
 
-        if (time_limit > 0 && elapsed > time_limit * 0.5) break;
+        // Hard stop — never start a new depth if we're already over time
+        if (time_up()) break;
     }
 
     return best_move;
@@ -195,15 +204,28 @@ std::pair<Move, int> Searcher::search_root(const Board& board,
     int  alpha      = -CHECKMATE_SCORE - 1;
     int  beta       =  CHECKMATE_SCORE + 1;
 
-    // If called from aspiration window loop, use the passed-in window
-    // (prev_score is 0 on the very first iteration — use full window)
-    (void)prev_score;   // Window is managed by find_best_move
+    (void)prev_score;
 
-    for (const Move& move : moves) {
+    for (int i = 0; i < (int)moves.size(); i++) {
+        const Move& move = moves[i];
         Board new_board = apply_move(board, move);
         Hash  new_hash  = update_hash(hash, board, move, new_board);
-        int   score     = -alphabeta(new_board, new_hash,
-                                     depth - 1, -beta, -alpha, 1);
+        int   score;
+
+        if (i == 0) {
+            // First move: full window search
+            score = -alphabeta(new_board, new_hash,
+                               depth - 1, -beta, -alpha, 1);
+        } else {
+            // PVS: zero window search first
+            score = -alphabeta(new_board, new_hash,
+                               depth - 1, -alpha - 1, -alpha, 1);
+            // If it beat alpha, confirm with full window
+            if (score > alpha && score < beta)
+                score = -alphabeta(new_board, new_hash,
+                                   depth - 1, -beta, -alpha, 1);
+        }
+
         if (score > best_score) { best_score = score; best_move = move; }
         alpha = std::max(alpha, score);
         if (time_up()) break;
@@ -313,32 +335,47 @@ int Searcher::alphabeta(const Board& board, Hash hash,
         bool  is_promo   = (move.promotion != 0);
         int   score;
 
-        // ── Late Move Reductions (LMR) ──
-        // Later moves in the ordered list are probably weaker.
-        // Search them at reduced depth — if they still look interesting,
-        // re-search at full depth to confirm.
-        // Skipped for: early moves, captures, promotions, and checks.
-        if (move_idx >= LMR_MIN_MOVE_INDEX
-            && depth  >= LMR_MIN_DEPTH
-            && !in_check
-            && !is_capture
-            && !is_promo)
-        {
-            // Reduction grows for later moves and deeper searches
-            int R = 1 + (move_idx >= 6 ? 1 : 0)
-                      + (depth    >= 6 ? 1 : 0);
-
-            // Reduced-depth search with a zero window
-            score = -alphabeta(new_board, new_hash,
-                               depth - 1 - R, -alpha - 1, -alpha, ply + 1);
-
-            // If it beat alpha, confirm with full depth
-            if (score > alpha)
+        if (move_idx == 0) {
+            // ── First move: full window (PVS) ──
+            // The first move after ordering is our best guess — search fully
+            if (move_idx >= LMR_MIN_MOVE_INDEX
+                && depth  >= LMR_MIN_DEPTH
+                && !in_check && !is_capture && !is_promo)
+            {
+                int R = 1 + (move_idx >= 6 ? 1 : 0) + (depth >= 6 ? 1 : 0);
+                score = -alphabeta(new_board, new_hash,
+                                   depth - 1 - R, -alpha - 1, -alpha, ply + 1);
+                if (score > alpha)
+                    score = -alphabeta(new_board, new_hash,
+                                       depth - 1, -beta, -alpha, ply + 1);
+            } else {
                 score = -alphabeta(new_board, new_hash,
                                    depth - 1, -beta, -alpha, ply + 1);
+            }
         } else {
+            // ── Subsequent moves: zero window first (PVS) ──
+            // Assume they're worse than the best move found so far.
+            // Only re-search fully if they surprise us.
+            int search_depth = depth - 1;
+
+            // Apply LMR to reduce depth for late quiet moves
+            if (move_idx >= LMR_MIN_MOVE_INDEX
+                && depth  >= LMR_MIN_DEPTH
+                && !in_check && !is_capture && !is_promo)
+            {
+                int R = 1 + (move_idx >= 6 ? 1 : 0) + (depth >= 6 ? 1 : 0);
+                search_depth = depth - 1 - R;
+            }
+
+            // Zero window search
             score = -alphabeta(new_board, new_hash,
-                               depth - 1, -beta, -alpha, ply + 1);
+                               search_depth, -alpha - 1, -alpha, ply + 1);
+
+            // Re-search at full depth if it beat alpha and we reduced,
+            // or if it's within the window
+            if (score > alpha && (search_depth < depth - 1 || score < beta))
+                score = -alphabeta(new_board, new_hash,
+                                   depth - 1, -beta, -alpha, ply + 1);
         }
 
         if (score >= beta) {
