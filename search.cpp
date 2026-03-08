@@ -200,17 +200,27 @@ int Searcher::alphabeta(const Board& board, Hash hash,
     // for us for the opponent to do anything about it.
     // Skipped when: already in a null search, in check, or depth too low.
     if (!in_null_move
-        && depth >= NULL_MOVE_MIN_DEPTH
-        && !in_check)
+        && depth >= 4
+        && !in_check
+        && beta  <  CHECKMATE_SCORE
+        && alpha > -CHECKMATE_SCORE)
     {
+        // Flip the turn using XOR — safer than recomputing the full hash
+        Hash null_hash = hash ^ BLACK_TO_MOVE;
+        if (board.en_passant_sq != -1)
+            null_hash ^= EN_PASSANT_RANDOM[file_of(board.en_passant_sq)];
+
         Board null_board         = board;
         null_board.turn          = -board.turn;
         null_board.en_passant_sq = -1;
-        Hash null_hash           = compute_hash(null_board);
+
+        // R=2 at shallow depth, R=3 deeper — never reduce to depth 0
+        int R          = (depth >= 6) ? 3 : 2;
+        int null_depth = std::max(1, depth - 1 - R);
 
         in_null_move = true;
         int null_score = -alphabeta(null_board, null_hash,
-                                    depth - 1 - NULL_MOVE_REDUCTION,
+                                    null_depth,
                                     -beta, -beta + 1, ply + 1);
         in_null_move = false;
 
