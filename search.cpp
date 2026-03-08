@@ -108,11 +108,59 @@ Move Searcher::find_best_move(const Board& board, int max_depth,
         if (soft_limit > 0 && (now() - start_time) >= soft_limit) break;
         if (time_up()) break;
 
-        auto [move, score] = search_root(board, current_hash, depth);
+        Move iter_move(0, 0);
+        int  iter_score = 0;
 
-        if (move.from_sq != move.to_sq || move.from_sq != 0) {
-            best_move  = move;
-            best_score = score;
+        // ── Aspiration Windows ──
+        // From depth 4 upwards, search with a narrow window around the
+        // previous score. If the result falls outside, widen and retry.
+        // At depth 1-3 just do a full-width search — not worth the overhead.
+        if (depth >= ASPIRATION_MIN_DEPTH && best_score != 0) {
+            int delta = ASPIRATION_INITIAL_DELTA;
+            int alpha = best_score - delta;
+            int beta  = best_score + delta;
+
+            while (true) {
+                auto [move, score] = search_root(board, current_hash,
+                                                 depth, best_score);
+                iter_move  = move;
+                iter_score = score;
+
+                if (score <= alpha) {
+                    // Failed low — result was below our window
+                    // Widen the lower bound and retry
+                    alpha -= delta;
+                    delta *= 2;
+                } else if (score >= beta) {
+                    // Failed high — result was above our window
+                    // Widen the upper bound and retry
+                    beta  += delta;
+                    delta *= 2;
+                } else {
+                    // Result fit inside the window — done
+                    break;
+                }
+
+                // Safety: if window has grown very wide, just go full width
+                if (alpha < -CHECKMATE_SCORE / 2) alpha = -CHECKMATE_SCORE - 1;
+                if (beta  >  CHECKMATE_SCORE / 2) beta  =  CHECKMATE_SCORE + 1;
+
+                // If we've blown out to a full window, stop resizing
+                if (alpha <= -CHECKMATE_SCORE && beta >= CHECKMATE_SCORE) break;
+
+                if (time_up()) break;
+            }
+        } else {
+            // Depth 1-3: full window search
+            auto [move, score] = search_root(board, current_hash,
+                                             depth, best_score);
+            iter_move  = move;
+            iter_score = score;
+        }
+
+        if (iter_move.from_sq != iter_move.to_sq || iter_move.from_sq != 0) {
+            best_move  = iter_move;
+            best_score = iter_score;
         }
 
         double elapsed    = now() - start_time;
@@ -135,7 +183,8 @@ Move Searcher::find_best_move(const Board& board, int max_depth,
 }
 
 std::pair<Move, int> Searcher::search_root(const Board& board,
-                                            Hash hash, int depth) {
+                                            Hash hash, int depth,
+                                            int prev_score) {
     auto moves = generate_legal_moves(board);
     if (moves.empty()) return {Move(0, 0), 0};
 
@@ -146,6 +195,10 @@ std::pair<Move, int> Searcher::search_root(const Board& board,
     int  alpha      = -CHECKMATE_SCORE - 1;
     int  beta       =  CHECKMATE_SCORE + 1;
 
+    // If called from aspiration window loop, use the passed-in window
+    // (prev_score is 0 on the very first iteration — use full window)
+    (void)prev_score;   // Window is managed by find_best_move
+
     for (const Move& move : moves) {
         Board new_board = apply_move(board, move);
         Hash  new_hash  = update_hash(hash, board, move, new_board);
@@ -153,6 +206,7 @@ std::pair<Move, int> Searcher::search_root(const Board& board,
                                      depth - 1, -beta, -alpha, 1);
         if (score > best_score) { best_score = score; best_move = move; }
         alpha = std::max(alpha, score);
+        if (time_up()) break;
     }
 
     tt_store(hash, depth, best_score, TT_EXACT, best_move);
@@ -193,6 +247,20 @@ int Searcher::alphabeta(const Board& board, Hash hash,
     }
 
     bool in_check = king_in_check(board, board.turn);
+
+    // ── Futility Pruning ──
+    // At depth 1, 2, or 3: if the static evaluation is so far below alpha
+    // that even a generous "best possible gain" can't reach it, skip this
+    // node entirely. Only safe when not in check and not near mate.
+    if (depth >= 1 && depth <= 3
+        && !in_check
+        && alpha > -CHECKMATE_SCORE / 2
+        && beta  <  CHECKMATE_SCORE / 2)
+    {
+        int static_eval = score_from_perspective(board);
+        if (static_eval + FUTILITY_MARGIN[depth] <= alpha)
+            return quiescence(board, hash, alpha, beta);
+    }
 
     // ── Null Move Pruning ──
     // Skip our turn and search at reduced depth. If the result is still
