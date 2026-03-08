@@ -264,7 +264,7 @@ struct UCIEngine {
         else if (cmd == "ucinewgame") cmd_ucinewgame();
         else if (cmd == "position")   cmd_position(tokens);
         else if (cmd == "go")         cmd_go(tokens);
-        else if (cmd == "stop")       {}   // No time management yet
+        else if (cmd == "stop")       { searcher.time_limit = 0; }
         else if (cmd == "quit")       std::exit(0);
         else if (cmd == "print")      board.print_board();
         else if (cmd == "fen") {
@@ -330,20 +330,82 @@ struct UCIEngine {
     }
 
     void cmd_go(const std::vector<std::string>& tokens) {
-        int    depth      = default_depth;
+        int    depth      = 99;    // No fixed depth — let time management decide
         double time_limit = -1.0;
 
+        // Parse all UCI go parameters
+        int wtime = -1, btime = -1, winc = 0, binc = 0, movetime = -1;
+        bool infinite = false;
+
         for (int i = 1; i < (int)tokens.size(); i++) {
-            if (tokens[i] == "depth" && i + 1 < (int)tokens.size())
-                depth = std::stoi(tokens[i + 1]);
-            else if (tokens[i] == "movetime" && i + 1 < (int)tokens.size())
-                time_limit = std::stoi(tokens[i + 1]) / 1000.0;
-            else if ((tokens[i] == "wtime" || tokens[i] == "btime")
-                     && i + 1 < (int)tokens.size()) {
-                bool our_time = (tokens[i] == "wtime" && board.turn == WHITE) ||
-                                (tokens[i] == "btime" && board.turn == BLACK);
-                if (our_time)
-                    time_limit = std::stoi(tokens[i + 1]) / 1000.0 * 0.05;
+            auto get_next_int = [&]() {
+                return (i + 1 < (int)tokens.size()) ? std::stoi(tokens[++i]) : 0;
+            };
+            if      (tokens[i] == "depth")    { depth    = get_next_int(); }
+            else if (tokens[i] == "movetime") { movetime = get_next_int(); }
+            else if (tokens[i] == "wtime")    { wtime    = get_next_int(); }
+            else if (tokens[i] == "btime")    { btime    = get_next_int(); }
+            else if (tokens[i] == "winc")     { winc     = get_next_int(); }
+            else if (tokens[i] == "binc")     { binc     = get_next_int(); }
+            else if (tokens[i] == "infinite") { infinite = true; }
+        }
+
+        // ── Calculate time limit ──
+        if (infinite || depth < 99) {
+            // Fixed depth or infinite — no time limit
+            time_limit = -1.0;
+            if (infinite) depth = 99;
+        } else if (movetime > 0) {
+            // Exact time per move — leave a 50ms safety margin
+            time_limit = movetime / 1000.0 - 0.05;
+        } else {
+            // Clock time — calculate a sensible budget
+            int our_time = (board.turn == WHITE) ? wtime : btime;
+            int our_inc  = (board.turn == WHITE) ? winc  : binc;
+
+            if (our_time > 0) {
+                // Estimate moves remaining in the game.
+                // We use two signals:
+                //   1. Move number — later in the game, fewer moves remain
+                //   2. Material on the board — endgames tend to be shorter
+                int moves_played = board.fullmove_number - 1;
+
+                // Count total material to estimate game phase
+                int total_material = 0;
+                for (int sq_idx = 0; sq_idx < 64; sq_idx++) {
+                    int piece = board.get_piece(sq_idx);
+                    int pt    = std::abs(piece);
+                    if (pt > 0 && pt < KING)
+                        total_material += PIECE_VALUES[pt];
+                }
+                // Full material ~7800cp, endgame ~2000cp
+                // Scale expected game length: 40 moves in middlegame, 20 in endgame
+                double material_fraction = std::min(1.0, total_material / 7800.0);
+                int expected_total       = (int)(20 + 20 * material_fraction);
+                int moves_left           = std::max(8, expected_total - moves_played);
+
+                // Base time: divide remaining time by expected moves left
+                double base_time  = our_time / 1000.0 / moves_left;
+
+                // Add a fraction of the increment
+                double inc_time   = our_inc / 1000.0 * 0.8;
+
+                // Total budget — but never use more than 20% of remaining time
+                // so we don't flag on time in sudden-death controls
+                double max_time   = our_time / 1000.0 * 0.2;
+                time_limit        = std::min(base_time + inc_time, max_time);
+
+                // Enforce a minimum think time of 0.1s so we don't
+                // instantly play random moves in time trouble
+                time_limit        = std::max(time_limit, 0.1);
+
+                std::cerr << "  [Time] budget=" << time_limit << "s"
+                          << " remaining=" << our_time / 1000.0 << "s"
+                          << " moves_left=" << moves_left << "\n";
+            } else {
+                // No clock info at all — fall back to default depth
+                depth      = default_depth;
+                time_limit = -1.0;
             }
         }
 
@@ -355,8 +417,19 @@ struct UCIEngine {
             return;
         }
 
+        // Route the right time arguments to find_best_move:
+        //   movetime => time_limit_secs (hard cutoff)
+        //   wtime/btime => time_budget_ms (managed by allocate_time)
+        //   depth/infinite => no time limits
+        int  our_time_ms = (board.turn == WHITE) ? wtime : btime;
+        int  our_inc_ms  = (board.turn == WHITE) ? winc  : binc;
+        double tl_secs   = (movetime > 0) ? (movetime / 1000.0 - 0.05) : -1.0;
+        int  budget_ms   = (movetime <= 0 && our_time_ms > 0 && depth >= 99)
+                           ? our_time_ms : -1;
+
         // Search
-        Move best = searcher.find_best_move(board, depth, time_limit);
+        Move best = searcher.find_best_move(board, depth,
+                                            tl_secs, budget_ms, our_inc_ms, -1);
 
         if (best.from_sq == best.to_sq && best.from_sq == 0) {
             std::cout << "bestmove 0000\n";
