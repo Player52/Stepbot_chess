@@ -33,12 +33,7 @@ Searcher::Searcher()
     // than a loop for zeroing arrays
     std::memset(history, 0, sizeof(history));
     std::memset(killer_count, 0, sizeof(killer_count));
-
-    // Initialise killer move array with dummy moves
-    for (int i = 0; i < MAX_DEPTH; i++) {
-        killers[i][0] = Move(0, 0);
-        killers[i][1] = Move(0, 0);
-    }
+    // killers array initialises automatically via Move's default constructor
 
     // Reserve space in the transposition table
     tt.reserve(1 << 20);   // 1M buckets — '1 << 20' is 2^20 = 1,048,576
@@ -68,10 +63,7 @@ Move Searcher::find_best_move(const Board& board, int max_depth,
     // Reset killers and history
     std::memset(history, 0, sizeof(history));
     std::memset(killer_count, 0, sizeof(killer_count));
-    for (int i = 0; i < MAX_DEPTH; i++) {
-        killers[i][0] = Move(0, 0);
-        killers[i][1] = Move(0, 0);
-    }
+    // killers reset automatically — Move default constructor gives null moves
 
     Hash current_hash = compute_hash(board);
     Move best_move(0, 0);
