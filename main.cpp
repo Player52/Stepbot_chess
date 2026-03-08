@@ -19,27 +19,16 @@
 #include "zobrist.h"
 
 #include <iostream>
-#include <sstream>    // std::istringstream — for splitting strings
+#include <sstream>
 #include <string>
 #include <vector>
 #include <algorithm>
-
-// ─────────────────────────────────────────
-// ENGINE INFO
-// ─────────────────────────────────────────
 
 const std::string ENGINE_NAME   = "Stepbot";
 const std::string ENGINE_AUTHOR = "James";
 const std::string STARTING_FEN  =
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-// ─────────────────────────────────────────
-// FEN PARSER
-// Converts a FEN string into a Board object.
-// Same logic as board_from_fen() in engine.py.
-// ─────────────────────────────────────────
-
-// Map FEN characters to piece values
 static int fen_piece(char c) {
     switch (c) {
         case 'P': return  PAWN;   case 'p': return -PAWN;
@@ -55,124 +44,73 @@ static int fen_piece(char c) {
 Board board_from_fen(const std::string& fen) {
     Board board;
     board.squares.fill(EMPTY);
-
-    // Split FEN into parts
-    // std::istringstream lets us treat a string like a stream of words
     std::istringstream ss(fen);
     std::string piece_placement, active, castling, ep_str, halfmove, fullmove;
     ss >> piece_placement >> active >> castling >> ep_str >> halfmove >> fullmove;
-
-    // Parse piece placement
     int rank = 7, file = 0;
     for (char c : piece_placement) {
-        if (c == '/') {
-            rank--;
-            file = 0;
-        } else if (std::isdigit(c)) {
-            file += c - '0';
-        } else {
-            board.squares[sq(file, rank)] = fen_piece(c);
-            file++;
-        }
+        if (c == '/') { rank--; file = 0; }
+        else if (std::isdigit(c)) { file += c - '0'; }
+        else { board.squares[sq(file, rank)] = fen_piece(c); file++; }
     }
-
-    // Turn
     board.turn = (active == "w") ? WHITE : BLACK;
-
-    // Castling rights
     board.castling_rights.K = (castling.find('K') != std::string::npos);
     board.castling_rights.Q = (castling.find('Q') != std::string::npos);
     board.castling_rights.k = (castling.find('k') != std::string::npos);
     board.castling_rights.q = (castling.find('q') != std::string::npos);
-
-    // En passant
     board.en_passant_sq = (ep_str == "-") ? -1 : name_to_square(ep_str);
-
-    // Clocks
     board.halfmove_clock  = halfmove.empty()  ? 0 : std::stoi(halfmove);
     board.fullmove_number = fullmove.empty()   ? 1 : std::stoi(fullmove);
-
     return board;
 }
 
-// ─────────────────────────────────────────
-// FEN WRITER
-// Converts a Board object back to a FEN string.
-// ─────────────────────────────────────────
-
 std::string board_to_fen(const Board& board) {
     std::string fen;
-
     for (int r = 7; r >= 0; r--) {
         int empty_count = 0;
         for (int f = 0; f < 8; f++) {
             int piece = board.get_piece(sq(f, r));
-            if (piece == EMPTY) {
-                empty_count++;
-            } else {
-                if (empty_count > 0) {
-                    fen += ('0' + empty_count);
-                    empty_count = 0;
-                }
+            if (piece == EMPTY) { empty_count++; }
+            else {
+                if (empty_count > 0) { fen += ('0' + empty_count); empty_count = 0; }
                 fen += piece_symbol(piece);
             }
         }
         if (empty_count > 0) fen += ('0' + empty_count);
         if (r > 0) fen += '/';
     }
-
     fen += ' ';
     fen += (board.turn == WHITE) ? 'w' : 'b';
     fen += ' ';
-
     std::string castling;
     if (board.castling_rights.K) castling += 'K';
     if (board.castling_rights.Q) castling += 'Q';
     if (board.castling_rights.k) castling += 'k';
     if (board.castling_rights.q) castling += 'q';
     fen += castling.empty() ? "-" : castling;
-
     fen += ' ';
     fen += (board.en_passant_sq == -1) ? "-" : square_name(board.en_passant_sq);
-
     fen += ' ';
     fen += std::to_string(board.halfmove_clock);
     fen += ' ';
     fen += std::to_string(board.fullmove_number);
-
     return fen;
 }
-
-// ─────────────────────────────────────────
-// SPLIT STRING HELPER
-// Splits a string by spaces into a vector of tokens.
-// Like Python's str.split()
-// ─────────────────────────────────────────
 
 std::vector<std::string> split(const std::string& s) {
     std::vector<std::string> tokens;
     std::istringstream ss(s);
     std::string token;
-    // '>>' reads one whitespace-delimited token at a time
-    while (ss >> token)
-        tokens.push_back(token);
+    while (ss >> token) tokens.push_back(token);
     return tokens;
 }
 
-// ─────────────────────────────────────────
-// OPENING BOOK (lightweight inline version)
-// The full book.py logic stays in Python for the self-play tools.
-// Here we load opening_book.json at startup for use during play.
-// ─────────────────────────────────────────
-
-#include <fstream>            // For reading files
+#include <fstream>
 #include <unordered_map>
 
-// Simple book: maps FEN (position core) -> list of UCI moves
 static std::unordered_map<std::string, std::vector<std::string>> opening_book;
 
 static std::string fen_core(const std::string& full_fen) {
-    // Keep only the first 4 parts (strip clocks) — same as Python's _fen_core
     std::istringstream ss(full_fen);
     std::string parts[4], tok;
     int i = 0;
@@ -186,14 +124,9 @@ static void load_opening_book(const std::string& path) {
         std::cerr << "  [Book] No opening book found at " << path << "\n";
         return;
     }
-
-    // Minimal JSON parser for our simple book format
-    // We just scan for "fen": "...", "move": "..." patterns
     std::string line, fen, move;
     int loaded = 0;
-
     while (std::getline(f, line)) {
-        // Find "fen": "..."
         auto fen_pos = line.find("\"fen\"");
         if (fen_pos != std::string::npos) {
             auto start = line.find('"', fen_pos + 5) + 1;
@@ -201,8 +134,6 @@ static void load_opening_book(const std::string& path) {
             if (start != std::string::npos && end != std::string::npos)
                 fen = line.substr(start, end - start);
         }
-
-        // Find "move": "..."
         auto move_pos = line.find("\"move\"");
         if (move_pos != std::string::npos) {
             auto start = line.find('"', move_pos + 6) + 1;
@@ -210,16 +141,13 @@ static void load_opening_book(const std::string& path) {
             if (start != std::string::npos && end != std::string::npos) {
                 move = line.substr(start, end - start);
                 if (!fen.empty() && !move.empty()) {
-                    // Store by FEN core (no clocks)
                     opening_book[fen_core(fen)].push_back(move);
                     loaded++;
-                    move.clear();
-                    fen.clear();
+                    move.clear(); fen.clear();
                 }
             }
         }
     }
-
     std::cerr << "  [Book] Loaded " << loaded << " entries\n";
 }
 
@@ -227,26 +155,18 @@ static std::string book_lookup(const Board& board) {
     std::string core = fen_core(board_to_fen(board));
     auto it = opening_book.find(core);
     if (it == opening_book.end() || it->second.empty()) return "";
-    // Pick first move (weights handled by Python tools)
     return it->second[0];
 }
 
-// ─────────────────────────────────────────
-// UCI ENGINE
-// ─────────────────────────────────────────
-
 struct UCIEngine {
-    Board   board;
+    Board    board;
     Searcher searcher;
-    int     default_depth = 4;
+    int      default_depth = 9;
 
     UCIEngine() : board(board_from_fen(STARTING_FEN)) {}
 
     void run() {
         std::string line;
-
-        // std::getline reads a full line from stdin
-        // In Python this was input()
         while (std::getline(std::cin, line)) {
             if (line.empty()) continue;
             handle_command(line);
@@ -256,9 +176,7 @@ struct UCIEngine {
     void handle_command(const std::string& line) {
         auto tokens = split(line);
         if (tokens.empty()) return;
-
         const std::string& cmd = tokens[0];
-
         if      (cmd == "uci")        cmd_uci();
         else if (cmd == "isready")    cmd_isready();
         else if (cmd == "ucinewgame") cmd_ucinewgame();
@@ -267,17 +185,13 @@ struct UCIEngine {
         else if (cmd == "stop")       { searcher.time_limit = 0; }
         else if (cmd == "quit")       std::exit(0);
         else if (cmd == "print")      board.print_board();
-        else if (cmd == "fen") {
-            std::cout << board_to_fen(board) << "\n";
-        }
+        else if (cmd == "fen")        { std::cout << board_to_fen(board) << "\n"; }
         else if (cmd == "moves") {
             auto moves = generate_legal_moves(board);
             std::cout << "Legal moves (" << moves.size() << "): ";
-            for (const auto& m : moves)
-                std::cout << m.to_uci() << " ";
+            for (const auto& m : moves) std::cout << m.to_uci() << " ";
             std::cout << "\n";
         }
-        // Unknown commands are silently ignored (UCI spec)
     }
 
     void cmd_uci() {
@@ -299,17 +213,12 @@ struct UCIEngine {
 
     void cmd_position(const std::vector<std::string>& tokens) {
         if (tokens.size() < 2) return;
-
         int move_start = -1;
-
         if (tokens[1] == "startpos") {
             board = board_from_fen(STARTING_FEN);
-            // Check for "moves" keyword
-            for (int i = 2; i < (int)tokens.size(); i++) {
+            for (int i = 2; i < (int)tokens.size(); i++)
                 if (tokens[i] == "moves") { move_start = i + 1; break; }
-            }
         } else if (tokens[1] == "fen") {
-            // FEN is tokens 2-7 (up to 6 parts)
             std::string fen_str;
             int i = 2;
             for (; i < (int)tokens.size() && i < 8; i++) {
@@ -319,23 +228,15 @@ struct UCIEngine {
             }
             board = board_from_fen(fen_str);
         }
-
-        // Apply moves
-        if (move_start >= 0) {
-            for (int i = move_start; i < (int)tokens.size(); i++) {
-                Move move = uci_to_move(tokens[i]);
-                board = apply_move(board, move);
-            }
-        }
+        if (move_start >= 0)
+            for (int i = move_start; i < (int)tokens.size(); i++)
+                board = apply_move(board, uci_to_move(tokens[i]));
     }
 
     void cmd_go(const std::vector<std::string>& tokens) {
-        int    depth      = 99;    // No fixed depth — let time management decide
-        double time_limit = -1.0;
-
-        // Parse all UCI go parameters
-        int wtime = -1, btime = -1, winc = 0, binc = 0, movetime = -1;
-        bool infinite = false;
+        int    depth    = 99;
+        int    wtime    = -1, btime = -1, winc = 0, binc = 0, movetime = -1;
+        bool   infinite = false;
 
         for (int i = 1; i < (int)tokens.size(); i++) {
             auto get_next_int = [&]() {
@@ -350,66 +251,8 @@ struct UCIEngine {
             else if (tokens[i] == "infinite") { infinite = true; }
         }
 
-        // ── Calculate time limit ──
-        if (infinite || depth < 99) {
-            // Fixed depth or infinite — no time limit
-            time_limit = -1.0;
-            if (infinite) depth = 99;
-        } else if (movetime > 0) {
-            // Exact time per move — leave a 50ms safety margin
-            time_limit = movetime / 1000.0 - 0.05;
-        } else {
-            // Clock time — calculate a sensible budget
-            int our_time = (board.turn == WHITE) ? wtime : btime;
-            int our_inc  = (board.turn == WHITE) ? winc  : binc;
+        if (infinite) depth = 99;
 
-            if (our_time > 0) {
-                // Estimate moves remaining in the game.
-                // We use two signals:
-                //   1. Move number — later in the game, fewer moves remain
-                //   2. Material on the board — endgames tend to be shorter
-                int moves_played = board.fullmove_number - 1;
-
-                // Count total material to estimate game phase
-                int total_material = 0;
-                for (int sq_idx = 0; sq_idx < 64; sq_idx++) {
-                    int piece = board.get_piece(sq_idx);
-                    int pt    = std::abs(piece);
-                    if (pt > 0 && pt < KING)
-                        total_material += PIECE_VALUES[pt];
-                }
-                // Full material ~7800cp, endgame ~2000cp
-                // Scale expected game length: 40 moves in middlegame, 20 in endgame
-                double material_fraction = std::min(1.0, total_material / 7800.0);
-                int expected_total       = (int)(20 + 20 * material_fraction);
-                int moves_left           = std::max(8, expected_total - moves_played);
-
-                // Base time: divide remaining time by expected moves left
-                double base_time  = our_time / 1000.0 / moves_left;
-
-                // Add a fraction of the increment
-                double inc_time   = our_inc / 1000.0 * 0.8;
-
-                // Total budget — but never use more than 20% of remaining time
-                // so we don't flag on time in sudden-death controls
-                double max_time   = our_time / 1000.0 * 0.2;
-                time_limit        = std::min(base_time + inc_time, max_time);
-
-                // Enforce a minimum think time of 0.1s so we don't
-                // instantly play random moves in time trouble
-                time_limit        = std::max(time_limit, 0.1);
-
-                std::cerr << "  [Time] budget=" << time_limit << "s"
-                          << " remaining=" << our_time / 1000.0 << "s"
-                          << " moves_left=" << moves_left << "\n";
-            } else {
-                // No clock info at all — fall back to default depth
-                depth      = default_depth;
-                time_limit = -1.0;
-            }
-        }
-
-        // Check opening book first
         std::string book_move = book_lookup(board);
         if (!book_move.empty()) {
             std::cout << "bestmove " << book_move << "\n";
@@ -417,29 +260,22 @@ struct UCIEngine {
             return;
         }
 
-        // Route the right time arguments to find_best_move:
-        //   movetime => time_limit_secs (hard cutoff)
-        //   wtime/btime => time_budget_ms (managed by allocate_time)
-        //   depth/infinite => no time limits
-        int  our_time_ms = (board.turn == WHITE) ? wtime : btime;
-        int  our_inc_ms  = (board.turn == WHITE) ? winc  : binc;
-        double tl_secs   = (movetime > 0) ? (movetime / 1000.0 - 0.05) : -1.0;
-        int  budget_ms   = (movetime <= 0 && our_time_ms > 0 && depth >= 99)
-                           ? our_time_ms : -1;
+        int    our_time_ms = (board.turn == WHITE) ? wtime : btime;
+        int    our_inc_ms  = (board.turn == WHITE) ? winc  : binc;
+        double tl_secs     = (movetime > 0) ? (movetime / 1000.0 - 0.05) : -1.0;
+        int    budget_ms   = (movetime <= 0 && our_time_ms > 0 && depth >= 99)
+                             ? our_time_ms : -1;
 
-        // Search
         Move best = searcher.find_best_move(board, depth,
                                             tl_secs, budget_ms, our_inc_ms, -1);
 
-        if (best.from_sq == best.to_sq && best.from_sq == 0) {
+        if (best.from_sq == best.to_sq && best.from_sq == 0)
             std::cout << "bestmove 0000\n";
-        } else {
+        else
             std::cout << "bestmove " << best.to_uci() << "\n";
-        }
         std::cout.flush();
     }
 
-    // Convert a UCI string to a Move
     Move uci_to_move(const std::string& uci) {
         int from  = name_to_square(uci.substr(0, 2));
         int to    = name_to_square(uci.substr(2, 2));
@@ -456,21 +292,10 @@ struct UCIEngine {
     }
 };
 
-// ─────────────────────────────────────────
-// MAIN
-// Program entry point — like Python's if __name__ == "__main__"
-// ─────────────────────────────────────────
-
 int main() {
-    // Initialise Zobrist tables before anything else
     init_zobrist();
-
-    // Load opening book
     load_opening_book("opening_book.json");
-
-    // Run the UCI engine
     UCIEngine engine;
     engine.run();
-
     return 0;
 }
