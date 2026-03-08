@@ -66,17 +66,42 @@ struct Searcher {
     int history[64][64];
 
     // Stats
-    int  nodes_searched;
-    int  tt_hits;
+    int    nodes_searched;
+    int    tt_hits;
     double start_time;
-    double time_limit;
+    double time_limit;     // Hard cutoff — stop immediately when reached
+    double soft_limit;     // Soft cutoff — don't start a new depth iteration
+
+    // Time management state
+    // Tracks how long the opponent spends per move so we can
+    // estimate a sensible budget for ourselves
+    double opponent_move_times[200];   // Rolling log of opponent move durations
+    int    opponent_move_count;
+    double last_go_time;               // Timestamp when we last received 'go'
 
     // Constructor — initialises everything
     Searcher();
 
-    // Main search entry point
+    // Main search entry point.
+    // time_budget_ms: total time remaining for our side in milliseconds (-1 = none)
+    // inc_ms:         increment per move in milliseconds (0 = none)
+    // moves_to_go:    moves until next time control (-1 = unknown)
     Move find_best_move(const Board& board, int max_depth,
-                        double time_limit_secs = -1.0);
+                        double time_limit_secs  = -1.0,
+                        int    time_budget_ms   = -1,
+                        int    inc_ms           = 0,
+                        int    moves_to_go      = -1);
+
+    // Called by UCI handler when opponent makes a move,
+    // so we can record how long they took
+    void record_opponent_move_time(double seconds);
+
+    // Compute a time allocation for this move given the clock state
+    // Returns (soft_limit_secs, hard_limit_secs)
+    std::pair<double,double> allocate_time(int time_budget_ms,
+                                           int inc_ms,
+                                           int moves_to_go,
+                                           int fullmove_number) const;
 
     // Internal search functions
     std::pair<Move, int> search_root(const Board& board, Hash hash, int depth);
