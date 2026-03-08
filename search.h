@@ -20,16 +20,30 @@ const int TT_LOWER_BOUND = 1;
 const int TT_UPPER_BOUND = 2;
 
 // ── Null Move Pruning ──
-// We skip our turn ("null move") and search at reduced depth.
-// If the result is still >= beta, the position is so good we can prune.
-const int NULL_MOVE_REDUCTION = 3;   // Reduce by R=3 plies
-const int NULL_MOVE_MIN_DEPTH = 3;   // Only try at depth >= 3
+const int NULL_MOVE_REDUCTION = 3;
+const int NULL_MOVE_MIN_DEPTH = 3;
 
 // ── Late Move Reductions (LMR) ──
-// Moves later in the ordered list are likely worse — search them at
-// reduced depth. If they look interesting, re-search at full depth.
-const int LMR_MIN_DEPTH      = 3;   // Only apply at depth >= 3
-const int LMR_MIN_MOVE_INDEX = 3;   // Only reduce moves after the 3rd
+const int LMR_MIN_DEPTH      = 3;
+const int LMR_MIN_MOVE_INDEX = 3;
+
+// ── Aspiration Windows ──
+// Start each iterative deepening iteration with a narrow window around
+// the previous score. If the result falls outside, widen and re-search.
+// Much cheaper than always searching with a full -inf/+inf window.
+const int ASPIRATION_INITIAL_DELTA = 50;   // ±50cp starting window
+const int ASPIRATION_MIN_DEPTH     = 4;    // Only use from depth 4 up
+
+// ── Futility Pruning ──
+// Near leaf nodes, if the static eval is so far below alpha that no
+// realistic move could catch up, skip searching that node entirely.
+// Indexed by remaining depth (1, 2, 3).
+const int FUTILITY_MARGIN[4] = {
+    0,     // depth 0 — unused (quiescence handles this)
+    150,   // depth 1 — one move can gain at most ~150cp
+    300,   // depth 2 — two moves ~300cp
+    500,   // depth 3 — three moves ~500cp
+};
 
 struct TTEntry {
     Hash hash;
@@ -79,7 +93,8 @@ struct Searcher {
                                            int moves_to_go,
                                            int fullmove_number) const;
 
-    std::pair<Move, int> search_root(const Board& board, Hash hash, int depth);
+    std::pair<Move, int> search_root(const Board& board, Hash hash,
+                                     int depth, int prev_score);
 
     int alphabeta(const Board& board, Hash hash,
                   int depth, int alpha, int beta, int ply);
