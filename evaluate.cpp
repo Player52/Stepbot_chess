@@ -4,8 +4,8 @@
 
 #include "evaluate.h"
 #include "movegen.h"
-#include <cstdlib>   // std::abs
-#include <algorithm> // std::min, std::max
+#include <cstdlib>
+#include <algorithm>
 
 // ─────────────────────────────────────────
 // PIECE VALUES
@@ -259,6 +259,18 @@ int eval_pawn_structure(const Board& board, bool endgame) {
 // KING SAFETY
 // ─────────────────────────────────────────
 
+// Attack weight per piece type — how dangerous each attacker is
+static const int ATTACK_WEIGHT[7] = {0, 0, 20, 20, 40, 80, 0};
+
+// Danger score -> penalty table (like Stockfish's king safety table)
+// Index is the raw danger score, value is the centipawn penalty
+static int danger_to_penalty(int danger) {
+    if (danger <= 0)   return 0;
+    if (danger >= 400) return 600;   // Maximum penalty
+    // Quadratic scaling — danger compounds quickly
+    return (danger * danger) / 256;
+}
+
 int eval_king_safety(const Board& board, bool endgame) {
     if (endgame) return 0;
 
@@ -281,9 +293,12 @@ int eval_king_safety(const Board& board, bool endgame) {
         int kf = file_of(king_sq);
         int kr = rank_of(king_sq);
 
-        // Pawn shield
+        int danger = 0;   // Accumulates threat level against this king
+
+        // ── Pawn shield ──
+        // Friendly pawns directly in front of the king are protective
         for (int shield_rank_offset : {1, 2}) {
-            int shield_rank = kr + (colour == WHITE ? shield_rank_offset
+            int shield_rank = kr + (colour == WHITE ?  shield_rank_offset
                                                     : -shield_rank_offset);
             if (shield_rank < 0 || shield_rank > 7) continue;
             for (int df = -1; df <= 1; df++) {
@@ -291,10 +306,13 @@ int eval_king_safety(const Board& board, bool endgame) {
                 if (sf < 0 || sf > 7) continue;
                 if (board.get_piece(sq(sf, shield_rank)) == colour * PAWN)
                     score += sign * PAWN_SHIELD_BONUS;
+                else if (shield_rank_offset == 1)
+                    // Missing pawn on first shield rank is dangerous
+                    danger += 15;
             }
         }
 
-        // Open files near king
+        // ── Open files near king ──
         for (int df = -1; df <= 1; df++) {
             int f = kf + df;
             if (f < 0 || f > 7) continue;
@@ -304,28 +322,93 @@ int eval_king_safety(const Board& board, bool endgame) {
                 if (piece == colour * PAWN) has_friendly = true;
                 if (piece == enemy  * PAWN) has_enemy    = true;
             }
-            if (!has_friendly && !has_enemy)
+            if (!has_friendly && !has_enemy) {
                 score += sign * OPEN_FILE_NEAR_KING;
-            else if (!has_friendly)
+                danger += 25;   // Fully open file = rook/queen highway
+            } else if (!has_friendly) {
                 score += sign * SEMI_OPEN_FILE_KING;
-        }
-
-        // Attacker count near king
-        int attacker_count = 0;
-        for (int r = std::max(0, kr - 1); r <= std::min(7, kr + 1); r++) {
-            for (int f = std::max(0, kf - 1); f <= std::min(7, kf + 1); f++) {
-                int piece = board.get_piece(sq(f, r));
-                if (piece == EMPTY) continue;
-                if ((piece > 0) == (colour == WHITE)) continue;
-                int pt = std::abs(piece);
-                if (pt == KNIGHT || pt == BISHOP || pt == ROOK || pt == QUEEN)
-                    attacker_count++;
+                danger += 12;
             }
         }
-        if (attacker_count > 0) {
-            int idx = std::min(attacker_count - 1, 3);
-            score += sign * KING_ATTACKER_WEIGHT[idx];
+
+        // ── King attack zone ──
+        // Count enemy pieces attacking squares near the king.
+        // We look at a 5x5 zone centred on the king for long-range pieces.
+        int num_attackers  = 0;
+        int attack_units   = 0;
+
+        for (int sq_idx = 0; sq_idx < 64; sq_idx++) {
+            int piece = board.get_piece(sq_idx);
+            if (piece == EMPTY) continue;
+            if ((piece > 0) == (colour == WHITE)) continue;   // Only enemy pieces
+
+            int pt = std::abs(piece);
+            if (pt == PAWN || pt == KING) continue;
+
+            // Check if this piece attacks any square in the king zone
+            bool attacks_zone = false;
+
+            // King zone: 3x3 around king plus one rank in front
+            int front_rank = kr + (colour == WHITE ? 1 : -1);
+
+            for (int zr = std::max(0, kr - 1); zr <= std::min(7, kr + 1); zr++) {
+                for (int zf = std::max(0, kf - 1); zf <= std::min(7, kf + 1); zf++) {
+                    int zone_sq = sq(zf, zr);
+                    if (square_attacked_by(board, zone_sq, enemy)) {
+                        attacks_zone = true;
+                    }
+                }
+            }
+            // Also check extended front rank
+            if (front_rank >= 0 && front_rank <= 7) {
+                for (int zf = std::max(0, kf - 2); zf <= std::min(7, kf + 2); zf++) {
+                    if (square_attacked_by(board, sq(zf, front_rank), enemy))
+                        attacks_zone = true;
+                }
+            }
+
+            if (attacks_zone) {
+                num_attackers++;
+                attack_units += ATTACK_WEIGHT[pt];
+            }
         }
+
+        // More attackers = danger compounds exponentially
+        if (num_attackers >= 2) {
+            danger += attack_units * num_attackers / 2;
+        } else if (num_attackers == 1) {
+            danger += attack_units / 4;   // Single attacker is much less dangerous
+        }
+
+        // ── Escape squares ──
+        // If the king has very few safe squares to move to, penalise heavily
+        int escape_squares = 0;
+        for (int direction : ALL_DIRS) {
+            int target = king_sq + direction;
+            if (target < 0 || target >= 64) continue;
+            if (std::abs(file_of(king_sq) - file_of(target)) > 1) continue;
+            if (std::abs(rank_of(king_sq) - rank_of(target)) > 1) continue;
+            int occupant = board.get_piece(target);
+            if ((occupant > 0) == (colour == WHITE) && occupant != EMPTY) continue;
+            if (!square_attacked_by(board, target, enemy))
+                escape_squares++;
+        }
+        if (escape_squares == 0) danger += 80;
+        else if (escape_squares == 1) danger += 40;
+        else if (escape_squares == 2) danger += 15;
+
+        // ── Queen proximity bonus ──
+        // Enemy queen near our king is especially dangerous
+        for (int sq_idx = 0; sq_idx < 64; sq_idx++) {
+            if (board.get_piece(sq_idx) != enemy * QUEEN) continue;
+            int qf   = file_of(sq_idx);
+            int qr   = rank_of(sq_idx);
+            int dist = std::max(std::abs(qf - kf), std::abs(qr - kr));
+            if (dist <= 2) danger += (3 - dist) * 30;
+        }
+
+        // Convert danger to a score penalty
+        score -= sign * danger_to_penalty(danger);
     }
 
     return score;
