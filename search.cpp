@@ -27,8 +27,11 @@ static double now() {
 // ─────────────────────────────────────────
 
 Searcher::Searcher()
-    : nodes_searched(0), tt_hits(0), start_time(0), time_limit(-1)
+    : nodes_searched(0), tt_hits(0), start_time(0),
+      time_limit(-1), soft_limit(-1),
+      opponent_move_count(0), last_go_time(-1)
 {
+    std::memset(opponent_move_times, 0, sizeof(opponent_move_times));
     // std::memset fills a block of memory with a value — much faster
     // than a loop for zeroing arrays
     std::memset(history, 0, sizeof(history));
@@ -49,16 +52,106 @@ bool Searcher::time_up() const {
 }
 
 // ─────────────────────────────────────────
+// OPPONENT MOVE TIME RECORDING
+// Called from main.cpp each time the opponent plays a move
+// ─────────────────────────────────────────
+
+void Searcher::record_opponent_move_time(double seconds) {
+    if (seconds <= 0) return;
+    int idx = opponent_move_count % 200;
+    opponent_move_times[idx] = seconds;
+    opponent_move_count++;
+}
+
+// ─────────────────────────────────────────
+// TIME ALLOCATION
+// Given clock state, returns (soft_limit, hard_limit) in seconds.
+//
+// Soft limit: don't start a new iterative deepening iteration
+// Hard limit: abandon search immediately mid-iteration
+//
+// Strategy:
+//   - Estimate moves remaining based on game phase
+//   - Budget = remaining_time / moves_remaining + increment
+//   - Hard limit = 3x soft limit (never exceed 10% of remaining time)
+// ─────────────────────────────────────────
+
+std::pair<double,double> Searcher::allocate_time(int time_budget_ms,
+                                                   int inc_ms,
+                                                   int moves_to_go,
+                                                   int fullmove_number) const {
+    if (time_budget_ms <= 0) return {-1.0, -1.0};
+
+    double remaining_secs = time_budget_ms / 1000.0;
+    double inc_secs       = inc_ms / 1000.0;
+
+    // Estimate moves remaining in the game
+    // Early game: assume ~40 moves left
+    // Middlegame: ~25 moves left
+    // Endgame: ~15 moves left
+    int estimated_moves;
+    if      (fullmove_number < 10)  estimated_moves = 40;
+    else if (fullmove_number < 30)  estimated_moves = 30;
+    else if (fullmove_number < 50)  estimated_moves = 20;
+    else                            estimated_moves = 15;
+
+    if (moves_to_go > 0)
+        estimated_moves = moves_to_go;
+
+    // Base allocation
+    double soft = (remaining_secs / estimated_moves) + inc_secs * 0.8;
+
+    // Never use more than 10% of remaining time on one move
+    double max_soft = remaining_secs * 0.10;
+    soft = std::min(soft, max_soft);
+    soft = std::max(soft, 0.1);   // At least 100ms
+
+    // Hard limit: 3x soft, but never more than 20% of remaining
+    double hard = std::min(soft * 3.0, remaining_secs * 0.20);
+    hard = std::max(hard, soft + 0.1);
+
+    return {soft, hard};
+}
+
+// ─────────────────────────────────────────
 // FIND BEST MOVE
 // Iterative deepening entry point
 // ─────────────────────────────────────────
 
 Move Searcher::find_best_move(const Board& board, int max_depth,
-                               double time_limit_secs) {
+                               double time_limit_secs,
+                               int    time_budget_ms,
+                               int    inc_ms,
+                               int    moves_to_go) {
     nodes_searched = 0;
     tt_hits        = 0;
     start_time     = now();
-    time_limit     = time_limit_secs;
+    time_limit     = -1;
+    soft_limit     = -1;
+
+    // Record when we received 'go' — opponent's move just ended
+    if (last_go_time > 0) {
+        double opponent_time = start_time - last_go_time;
+        record_opponent_move_time(opponent_time);
+    }
+    last_go_time = start_time;
+
+    // Set time limits
+    if (time_limit_secs > 0) {
+        // Explicit movetime — hard limit only
+        time_limit = time_limit_secs;
+        soft_limit = time_limit_secs;
+    } else if (time_budget_ms > 0) {
+        // Clock-based time management
+        auto [soft, hard] = allocate_time(
+            time_budget_ms, inc_ms, moves_to_go, board.fullmove_number
+        );
+        soft_limit = soft;
+        time_limit = hard;
+        std::cerr << "  [Time] Budget=" << time_budget_ms
+                  << "ms  Soft=" << soft << "s  Hard=" << hard << "s\n";
+    }
+    // else: no time limit — search to max_depth
 
     // Reset killers and history
     std::memset(history, 0, sizeof(history));
@@ -70,10 +163,10 @@ Move Searcher::find_best_move(const Board& board, int max_depth,
     int  best_score = 0;
 
     for (int depth = 1; depth <= max_depth; depth++) {
+        // Soft limit: don't start a new iteration if already past budget
+        if (soft_limit > 0 && (now() - start_time) >= soft_limit) break;
         if (time_up()) break;
 
-        // std::pair holds two values — like Python's tuple
-        // .first and .second access them
         auto [move, score] = search_root(board, current_hash, depth);
 
         if (move.from_sq != move.to_sq || move.from_sq != 0) {
@@ -81,13 +174,24 @@ Move Searcher::find_best_move(const Board& board, int max_depth,
             best_score = score;
         }
 
-        double elapsed = now() - start_time;
-        std::cout << "  Depth " << depth
-                  << ": best=" << best_move.to_uci()
-                  << " score=" << (best_score >= 0 ? "+" : "") << best_score
-                  << " nodes=" << nodes_searched
-                  << " tt_hits=" << tt_hits
-                  << " time=" << elapsed << "s\n";
+        double elapsed     = now() - start_time;
+        int    elapsed_ms  = (int)(elapsed * 1000);
+        int    nps         = (elapsed > 0) ? (int)(nodes_searched / elapsed) : 0;
+
+        // UCI 'info' line — GUIs display this during search
+        // Goes to stdout (the GUI), not stderr
+        std::cout << "info depth "  << depth
+                  << " score cp "   << best_score
+                  << " nodes "      << nodes_searched
+                  << " nps "        << nps
+                  << " time "       << elapsed_ms
+                  << " pv "         << best_move.to_uci()
+                  << "\n";
+        std::cout.flush();
+
+        // If we used more than half our budget completing this depth,
+        // don't start the next one — we probably won't finish it in time
+        if (time_limit > 0 && elapsed > time_limit * 0.5) break;
     }
 
     return best_move;
