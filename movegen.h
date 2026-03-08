@@ -19,6 +19,10 @@ struct Move {
     int to_sq;
     int promotion;   // 0 = no promotion, otherwise KNIGHT/BISHOP/ROOK/QUEEN
 
+    // Default constructor — creates a null move (a1a1)
+    // Needed so we can declare arrays of Move objects e.g. Move killers[64][2]
+    Move() : from_sq(0), to_sq(0), promotion(0) {}
+
     // Constructor with default promotion of 0
     // In C++ you can give parameters default values like Python's def f(x=0)
     Move(int from, int to, int promo = 0)
