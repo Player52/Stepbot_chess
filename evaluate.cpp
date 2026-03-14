@@ -39,6 +39,12 @@ int MOBILITY_BONUS[7]       = {0, 0, 4, 3, 2, 1, 0};  // indexed by piece type
 int BISHOP_PAIR_BONUS       =  30;
 int ENDGAME_THRESHOLD       = 1300;
 
+// Phase 8 weights
+int ROOK_OPEN_FILE_BONUS      =  25;   // Rook on fully open file
+int ROOK_SEMI_OPEN_FILE_BONUS =  15;   // Rook on semi-open file
+int ROOK_SEVENTH_RANK_BONUS   =  30;   // Rook on 7th rank
+int KNIGHT_OUTPOST_BONUS      =  20;   // Knight on protected outpost
+
 // ─────────────────────────────────────────
 // PIECE-SQUARE TABLES
 // Same values as evaluate.py
@@ -499,6 +505,123 @@ int eval_bishop_pair(const Board& board) {
 }
 
 // ─────────────────────────────────────────
+// ROOK EVALUATION
+// ─────────────────────────────────────────
+
+int eval_rooks(const Board& board, bool endgame) {
+    int score = 0;
+
+    for (int colour : {WHITE, BLACK}) {
+        int sign  = colour;
+        int enemy = -colour;
+
+        // The "seventh rank" from each side's perspective
+        // White's 7th rank = rank index 6, Black's 7th = rank index 1
+        int seventh_rank = (colour == WHITE) ? 6 : 1;
+
+        for (int sq_idx = 0; sq_idx < 64; sq_idx++) {
+            if (board.get_piece(sq_idx) != colour * ROOK) continue;
+
+            int f = file_of(sq_idx);
+            int r = rank_of(sq_idx);
+
+            // ── Open / semi-open file bonus ──
+            // Scan the file for pawns
+            bool has_friendly_pawn = false;
+            bool has_enemy_pawn    = false;
+            for (int rank = 0; rank < 8; rank++) {
+                int piece = board.get_piece(sq(f, rank));
+                if (piece == colour * PAWN) has_friendly_pawn = true;
+                if (piece == enemy  * PAWN) has_enemy_pawn    = true;
+            }
+
+            if (!has_friendly_pawn && !has_enemy_pawn)
+                score += sign * ROOK_OPEN_FILE_BONUS;
+            else if (!has_friendly_pawn)
+                score += sign * ROOK_SEMI_OPEN_FILE_BONUS;
+
+            // ── Seventh rank bonus ──
+            // A rook on the 7th rank attacks the enemy's pawns on their
+            // starting rank and restricts the enemy king. Especially
+            // powerful when the enemy king is still on the back rank.
+            if (r == seventh_rank) {
+                // Extra bonus if the enemy king is also on the back rank
+                int enemy_back_rank = (colour == WHITE) ? 7 : 0;
+                bool king_on_back   = false;
+                for (int file = 0; file < 8; file++) {
+                    if (board.get_piece(sq(file, enemy_back_rank)) == enemy * KING)
+                        king_on_back = true;
+                }
+                int bonus = ROOK_SEVENTH_RANK_BONUS;
+                if (king_on_back) bonus += ROOK_SEVENTH_RANK_BONUS / 2;
+                score += sign * bonus;
+            }
+        }
+    }
+
+    return score;
+}
+
+// ─────────────────────────────────────────
+// KNIGHT OUTPOSTS
+// ─────────────────────────────────────────
+
+int eval_knight_outposts(const Board& board) {
+    int score = 0;
+
+    for (int colour : {WHITE, BLACK}) {
+        int sign  = colour;
+        int enemy = -colour;
+
+        // Outpost ranks: ranks 4-6 for White (indices 3-5), ranks 2-4 for Black
+        int min_rank = (colour == WHITE) ? 3 : 2;
+        int max_rank = (colour == WHITE) ? 5 : 4;
+
+        for (int sq_idx = 0; sq_idx < 64; sq_idx++) {
+            if (board.get_piece(sq_idx) != colour * KNIGHT) continue;
+
+            int f = file_of(sq_idx);
+            int r = rank_of(sq_idx);
+
+            // Must be on an outpost rank
+            if (r < min_rank || r > max_rank) continue;
+
+            // Must be protected by a friendly pawn
+            int pawn_rank   = r - (colour == WHITE ? 1 : -1);
+            bool pawn_protected = false;
+            if (pawn_rank >= 0 && pawn_rank <= 7) {
+                if (f > 0 && board.get_piece(sq(f - 1, pawn_rank)) == colour * PAWN)
+                    pawn_protected = true;
+                if (f < 7 && board.get_piece(sq(f + 1, pawn_rank)) == colour * PAWN)
+                    pawn_protected = true;
+            }
+            if (!pawn_protected) continue;
+
+            // Cannot be attacked by an enemy pawn
+            // (if it can be chased away it's not a true outpost)
+            bool safe = true;
+            int  enemy_pawn_direction = (colour == WHITE) ? -1 : 1;
+            int  attack_rank          = r + enemy_pawn_direction;
+            if (attack_rank >= 0 && attack_rank <= 7) {
+                if (f > 0 && board.get_piece(sq(f - 1, attack_rank)) == enemy * PAWN)
+                    safe = false;
+                if (f < 7 && board.get_piece(sq(f + 1, attack_rank)) == enemy * PAWN)
+                    safe = false;
+            }
+            if (!safe) continue;
+
+            // It's a true outpost — award bonus
+            // Extra bonus for central files (c, d, e, f = files 2-5)
+            int bonus = KNIGHT_OUTPOST_BONUS;
+            if (f >= 2 && f <= 5) bonus += KNIGHT_OUTPOST_BONUS / 2;
+            score += sign * bonus;
+        }
+    }
+
+    return score;
+}
+
+// ─────────────────────────────────────────
 // MAIN EVALUATE
 // ─────────────────────────────────────────
 
@@ -510,5 +633,7 @@ int evaluate(const Board& board) {
     score += eval_king_safety(board, endgame);
     score += eval_mobility(board);
     score += eval_bishop_pair(board);
+    score += eval_rooks(board, endgame);
+    score += eval_knight_outposts(board);
     return score;
 }
