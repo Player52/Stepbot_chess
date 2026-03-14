@@ -32,6 +32,12 @@ extern int MOBILITY_BONUS[7];       // Indexed by piece type
 extern int BISHOP_PAIR_BONUS;
 extern int ENDGAME_THRESHOLD;
 
+// Phase 8 additions
+extern int ROOK_OPEN_FILE_BONUS;      // Rook on fully open file
+extern int ROOK_SEMI_OPEN_FILE_BONUS; // Rook on file with only enemy pawns
+extern int ROOK_SEVENTH_RANK_BONUS;   // Rook on 7th rank (2nd for Black)
+extern int KNIGHT_OUTPOST_BONUS;      // Knight on advanced outpost square
+
 // ─────────────────────────────────────────
 // PIECE-SQUARE TABLES
 // ─────────────────────────────────────────
@@ -58,6 +64,8 @@ int  eval_pawn_structure(const Board& board, bool endgame);
 int  eval_king_safety(const Board& board, bool endgame);
 int  eval_mobility(const Board& board);
 int  eval_bishop_pair(const Board& board);
+int  eval_rooks(const Board& board, bool endgame);
+int  eval_knight_outposts(const Board& board);
 
 // Helper: piece-square table lookup for a given piece and square
 int piece_square_bonus(int piece_type, int sq, int colour, bool endgame);
