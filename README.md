@@ -1,30 +1,31 @@
 # Stepbot ♟️
 
-A chess engine built from scratch in Python, with the long-term goal of one day rivalling Stockfish.
+A chess engine built from scratch in C++, with the long-term goal of one day rivalling Stockfish.
 
 ---
 
 ## Getting Started
 
 ### Requirements
-- Python 3.8 or higher
-- No external Python packages needed
+- A C++17 compatible compiler (g++ recommended)
+- On Windows: MSYS2 MinGW x64
+- No external dependencies — fully self-contained
+
+### Building the engine
+
+```bash
+make
+```
+
+This compiles all C++ source files and produces `stepbot.exe` (Windows) or `stepbot` (Linux/Mac).
 
 ### Running the engine
 
 ```bash
-python run.py
+./stepbot.exe
 ```
 
 Starts Stepbot in UCI mode, ready to receive commands.
-
-### Running tests
-
-```bash
-python run.py --test
-```
-
-Runs sanity checks on the board, move generator, and evaluator.
 
 ### On Windows
 
@@ -36,9 +37,7 @@ Double-click `stepbot.bat` to launch without opening a terminal manually.
 
 Stepbot works with any UCI-compatible chess GUI. The recommended option is **Lucas Chess** (free).
 
-### Step 1 — Compile the wrapper (one time only)
-
-Stepbot needs a `.exe` file so Lucas Chess (or any other chess platform) can find it. The wrapper is a tiny file that just launches Python — you only need to compile it once.
+### Step 1 — Build the engine (one time only)
 
 1. Install **MSYS2** from [msys2.org](https://www.msys2.org)
 2. Open the **MSYS2 MinGW x64** terminal and run:
@@ -47,11 +46,11 @@ Stepbot needs a `.exe` file so Lucas Chess (or any other chess platform) can fin
    ```
 3. Open a command prompt in your Stepbot_chess folder and run:
    ```
-   g++ -o stepbot.exe stepbot_wrapper.cpp -m64 -static -lkernel32
+   make
    ```
 4. `stepbot.exe` will appear in your folder
 
-After this, you never need to recompile — updating the Python files updates the engine automatically.
+After this, you only need to recompile when you update the source files.
 
 ### Step 2 — Add Stepbot to Lucas Chess
 
@@ -59,7 +58,7 @@ After this, you never need to recompile — updating the Python files updates th
 2. Go to **Engines → Manage engines**
 3. Click **Add** and browse to `stepbot.exe`
 4. Lucas Chess auto-detects it as a UCI engine
-5. Set depth or time controls as you like
+5. Set the **MaxDepth** option (recommended: 9 for fast games, 11 for longer games)
 6. Start a game!
 
 ---
@@ -69,17 +68,18 @@ After this, you never need to recompile — updating the Python files updates th
 ```
 Stepbot_chess/
 ├── README.md                  ← This file
+├── CONTRIBUTING.md            ← Contribution guidelines
+├── CODE_OF_CONDUCT.md         ← Code of conduct
+├── SECURITY.md                ← Security policy
+├── Makefile                   ← Build system (run 'make' to compile)
 ├── stepbot.bat                ← Windows double-click launcher
-├── stepbot_wrapper.cpp        ← C++ source for the Lucas Chess wrapper
-├── stepbot.exe                ← Compiled wrapper (after you build it)
-├── run.py                     ← Main entry point
-├── engine.py                  ← UCI protocol interface
-├── board.py                   ← Board representation and helpers
-├── movegen.py                 ← Legal move generation
-├── evaluate.py                ← Position evaluation
-├── search.py                  ← Alpha-beta search with iterative deepening
-├── zobrist.py                 ← Zobrist hashing for the transposition table
-├── book.py                    ← Opening book loader
+├── stepbot_wrapper.cpp        ← Legacy Python wrapper (no longer needed)
+├── main.cpp                   ← UCI protocol interface and entry point
+├── board.h / board.cpp        ← Board representation and helpers
+├── movegen.h / movegen.cpp    ← Legal move generation
+├── evaluate.h / evaluate.cpp  ← Position evaluation
+├── search.h / search.cpp      ← Alpha-beta search engine
+├── zobrist.h / zobrist.cpp    ← Zobrist hashing for transposition table
 ├── opening_book.json          ← Opening book data
 ├── selfplay.py                ← Self-play engine with ELO tracking
 ├── analyse.py                 ← Blunder detection and game analysis
@@ -99,22 +99,77 @@ Stepbot_chess/
 ## How It Works
 
 ### Board Representation
-Mailbox array — a list of 64 integers. Positive = White, negative = Black, zero = empty.
+Mailbox array — 64 integers. Positive = White, negative = Black, zero = empty.
 
 ### Move Generation
 Generates all legal moves including castling, en passant, and promotion. Filters moves that leave the king in check.
 
 ### Evaluation
-Scores positions in centipawns (100 = one pawn). Includes material, piece-square tables, pawn structure, king safety, piece mobility, and endgame detection.
+Scores positions in centipawns (100 = one pawn). Uses **tapered evaluation** — scores are smoothly interpolated between middlegame and endgame based on remaining material, using separate piece-square tables for each phase.
+
+Evaluation components:
+- Material and piece-square tables (tapered MG/EG)
+- Pawn structure (doubled, isolated, passed pawns)
+- King safety (pawn shield, attack zone, escape squares, queen proximity)
+- Piece mobility
+- Bishop pair bonus
+- Rook on open/semi-open files
+- Rook on seventh rank
+- Knight outposts
 
 ### Search
-Alpha-beta pruning with iterative deepening, quiescence search, transposition table (Zobrist hashing), killer moves, and history heuristic.
+Alpha-beta pruning with iterative deepening and the following enhancements:
+- Quiescence search
+- Transposition table (Zobrist hashing)
+- Move ordering (TT move, MVV-LVA captures, killer moves, history heuristic)
+- Null move pruning
+- Late move reductions (LMR)
+- Principal variation search (PVS)
+- Aspiration windows
+- Futility pruning
 
 ### Opening Book
 JSON book covering main lines for both colours — Sicilian, Ruy Lopez, King's Indian, Queen's Gambit, London System, French, and Caro-Kann. Uses weighted random selection for variety. Weights update automatically after self-play sessions.
 
+### Time Management
+When playing with a clock, Stepbot allocates time based on estimated moves remaining, incrementally deepens until the soft time limit is reached, and respects a hard limit to avoid flagging. The `MaxDepth` UCI option caps search depth regardless of time.
+
 ### Self-Play & Training
-Stepbot can play against itself to improve over time. Each session logs games as PGN, updates opening book weights based on results, and tracks an ELO rating. Games can be analysed for blunders, mistakes, and inaccuracies, and evaluation weights can be tuned automatically using Texel tuning.
+Stepbot can play against itself to improve over time. Each session logs games as PGN, updates opening book weights, and tracks an ELO rating. Games can be analysed for blunders and evaluation weights can be tuned using Texel tuning.
+
+---
+
+## UCI Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `MaxDepth` | spin (1-20) | 9 | Maximum search depth per move |
+
+To set an option manually:
+```
+setoption name MaxDepth value 11
+```
+
+---
+
+## UCI Commands
+
+| Command | Description |
+|---------|-------------|
+| `uci` | Identify the engine |
+| `isready` | Check engine is ready |
+| `ucinewgame` | Reset for a new game |
+| `position startpos` | Set up starting position |
+| `position startpos moves e2e4 e7e5` | Starting position + moves |
+| `position fen <fen>` | Set up from FEN string |
+| `go depth 9` | Search to depth 9 |
+| `go movetime 5000` | Search for 5 seconds |
+| `go wtime 60000 btime 60000` | Search with clock (milliseconds) |
+| `go infinite` | Search indefinitely (ignores MaxDepth) |
+| `print` | Print the current board (debug) |
+| `fen` | Print current FEN (debug) |
+| `moves` | List all legal moves (debug) |
+| `quit` | Exit |
 
 ---
 
@@ -135,42 +190,23 @@ python selfplay.py --no-update            # play without updating the book
 Double-click `Self_play/analyse.bat`, or run directly:
 
 ```bash
-python analyse.py                          # analyse selfplay_games.pgn at depth 3
-python analyse.py --depth 4               # more accurate, slower
-python analyse.py --input my_games.pgn    # analyse any PGN file
+python analyse.py                        # analyse selfplay_games.pgn
+python analyse.py --depth 4              # more accurate, slower
+python analyse.py --input my_games.pgn   # analyse any PGN file
 ```
 
-Outputs an annotated PGN to `Self_play/selfplay_analysis.pgn` that can be imported into chess.com or Lichess.
+Outputs an annotated PGN to `Self_play/selfplay_analysis.pgn`.
 
 ### Texel tuning
 
 Double-click `Self_play/tune.bat`, or run directly:
 
 ```bash
-python tune.py                    # 200 iterations from selfplay_games.pgn
+python tune.py                    # 200 iterations
 python tune.py --iterations 500   # deeper tuning
 ```
 
-Saves optimised weights to `tuned_weights.json`. The more self-play games available, the better the tuning results.
-
----
-
-## UCI Commands
-
-| Command | Description |
-|---|---|
-| `uci` | Identify the engine |
-| `isready` | Check engine is ready |
-| `ucinewgame` | Reset for a new game |
-| `position startpos` | Set up starting position |
-| `position startpos moves e2e4 e7e5` | Starting position + moves |
-| `position fen <fen>` | Set up from FEN string |
-| `go depth 4` | Search to depth 4. The higher the number, the stronger the move but the longer it takes. |
-| `go movetime 1000` | Search for 1 second |
-| `print` | Print the current board (debug) |
-| `fen` | Print current FEN (debug) |
-| `moves` | List all legal moves (debug) |
-| `quit` | Exit |
+Saves optimised weights to `tuned_weights.json`.
 
 ---
 
@@ -178,7 +214,7 @@ Saves optimised weights to `tuned_weights.json`. The more self-play games availa
 
 ### ✅ Phase 1 — Foundation
 - [x] Board representation
-- [x] Legal move generation (all pieces, castling, en passant, promotion)
+- [x] Legal move generation
 - [x] Alpha-beta search with iterative deepening
 - [x] Quiescence search
 - [x] Material + piece-square table evaluation
@@ -187,7 +223,7 @@ Saves optimised weights to `tuned_weights.json`. The more self-play games availa
 ### ✅ Phase 2 — Play Stronger
 - [x] Transposition table (Zobrist hashing)
 - [x] Improved move ordering (killer moves, history heuristic)
-- [x] Pawn structure evaluation (doubled, isolated, passed pawns)
+- [x] Pawn structure evaluation
 - [x] King safety evaluation
 - [x] Piece mobility evaluation
 - [x] Endgame detection
@@ -199,25 +235,39 @@ Saves optimised weights to `tuned_weights.json`. The more self-play games availa
 ### ✅ Phase 4 — Self-Play & Training
 - [x] Self-play engine with PGN logging
 - [x] Blunder detection and analysis
-- [x] Texel tuning (evaluation weight tuning)
+- [x] Texel tuning
 - [x] ELO tracking
 
 ### ✅ Phase 4.5 — Windows Executable
-- [x] C++ wrapper source (stepbot_wrapper.cpp)
-- [x] Compiled stepbot.exe with MinGW
+- [x] C++ build system (Makefile)
 - [x] Self-play / analyse / tune launchers
 
-### 🔲 Phase 5 — C++ Port
-- [ ] C++ move generator
-- [ ] C++ search and evaluation
-- [ ] Python/C++ UCI bridge
+### ✅ Phase 5 — C++ Port
+- [x] Full C++ engine (board, movegen, evaluate, search, UCI)
+- [x] Makefile build system
 
-### 🔲 Phase 6 — Advanced
-- [ ] Null move pruning
-- [ ] Late move reductions
-- [ ] Endgame tablebases
-- [ ] NNUE neural evaluation
+### ✅ Phase 6 — Search Improvements
+- [x] Null move pruning
+- [x] Late move reductions (LMR)
+- [x] Time management
+
+### ✅ Phase 7 — Search Refinements
+- [x] Aspiration windows
+- [x] Principal variation search (PVS)
+- [x] Futility pruning
+- [x] MaxDepth UCI option
+
+### ✅ Phase 8 — Evaluation Improvements
+- [x] Rook on open/semi-open file bonus
+- [x] Rook on seventh rank bonus
+- [x] Knight outpost detection
+- [x] Tapered evaluation (smooth MG/EG interpolation)
+
+### 🔲 Phase 9 — NNUE Neural Evaluation
+- [ ] Generate training positions from self-play
+- [ ] Train a small neural network
+- [ ] Integrate NNUE into the search
 
 ---
 
-*Built by James — a Python chess engine that learns as it grows.*
+*Built by James — a C++ chess engine that learns as it grows.*
