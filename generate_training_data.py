@@ -42,29 +42,62 @@ STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
 class UCIEngine:
     def __init__(self, engine_path, depth):
-        self.depth = depth
-        self.proc  = subprocess.Popen(
-            [engine_path],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
-        )
+        self.depth   = depth
+        self.alive   = False
+
+        # subprocess.Popen needs the path as a string — on Windows paths
+        # with spaces must be passed as a list (not a shell string) to
+        # avoid quoting issues. We also capture stderr now so we can
+        # report startup failures.
+        try:
+            self.proc = subprocess.Popen(
+                [engine_path],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+        except FileNotFoundError:
+            raise RuntimeError(f"Engine not found: {engine_path}")
+        except OSError as e:
+            raise RuntimeError(f"Failed to launch engine: {e}")
+
+        # Verify the engine starts correctly
         self._send('uci')
-        self._wait_for('uciok')
+        response = self._wait_for('uciok', timeout=15.0)
+        if not response:
+            stderr_out = self.proc.stderr.read(500) if self.proc.stderr else ''
+            raise RuntimeError(
+                f"Engine did not respond to 'uci'. "
+                f"Stderr: {stderr_out!r}"
+            )
+
         self._send(f'setoption name MaxDepth value {depth}')
+        self._send('setoption name UseBook value false')
         self._send('isready')
-        self._wait_for('readyok')
+        response = self._wait_for('readyok', timeout=15.0)
+        if not response:
+            raise RuntimeError("Engine did not respond to 'isready'.")
+
+        self.alive = True
 
     def _send(self, cmd):
+        if self.proc.poll() is not None:
+            raise RuntimeError("Engine process has terminated unexpectedly.")
         self.proc.stdin.write(cmd + '\n')
         self.proc.stdin.flush()
 
-    def _wait_for(self, keyword, timeout=10.0):
+    def _wait_for(self, keyword, timeout=15.0):
         start = time.time()
         while time.time() - start < timeout:
-            line = self.proc.stdout.readline().strip()
+            # Check if process died
+            if self.proc.poll() is not None:
+                return ''
+            try:
+                line = self.proc.stdout.readline().strip()
+            except Exception:
+                return ''
             if keyword in line:
                 return line
         return ''
@@ -74,8 +107,11 @@ class UCIEngine:
         Sets the position and searches to self.depth.
         Returns (score_cp, best_move_uci).
         Score is from White's perspective.
-        Returns (None, None) on timeout or error.
+        Returns (None, None) on timeout or engine death.
         """
+        if self.proc.poll() is not None:
+            return None, None
+
         if moves:
             self._send(f'position fen {fen} moves {" ".join(moves)}')
         else:
@@ -87,8 +123,13 @@ class UCIEngine:
         best_move = None
         start     = time.time()
 
-        while time.time() - start < 60.0:
-            line = self.proc.stdout.readline().strip()
+        while time.time() - start < 120.0:
+            if self.proc.poll() is not None:
+                break
+            try:
+                line = self.proc.stdout.readline().strip()
+            except Exception:
+                break
             if not line:
                 continue
             if line.startswith('info') and 'score cp' in line:
@@ -115,10 +156,14 @@ class UCIEngine:
 
     def quit(self):
         try:
-            self._send('quit')
-            self.proc.wait(timeout=3.0)
+            if self.proc.poll() is None:
+                self._send('quit')
+                self.proc.wait(timeout=5.0)
         except Exception:
-            self.proc.kill()
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
 
 
 # ─────────────────────────────────────────
@@ -158,13 +203,11 @@ OPENINGS = [
 def play_game(engine, min_move=8, max_moves=150):
     """
     Plays a game from a random opening using the engine for both sides.
-
-    Records (fen_with_moves_applied, score_cp) for each position
-    from move min_move onwards, skipping positions with forced mates.
-
-    The score is always from White's perspective so the neural network
-    has a consistent target regardless of whose turn it is.
+    Records (position_string, score_cp) for positions from min_move onwards.
+    Score is always from White's perspective.
     """
+    engine._send('ucinewgame')
+
     opening   = random.choice(OPENINGS)
     moves     = list(opening)
     positions = []
@@ -172,19 +215,19 @@ def play_game(engine, min_move=8, max_moves=150):
     for move_number in range(max_moves):
         score_cp, best_move = engine.get_eval_and_move(STARTING_FEN, moves)
 
-        # Game over
+        # Game over — no legal moves or engine error
         if best_move is None or best_move == '0000':
             break
 
-        # Record position if past opening and not a forced mate
-        if move_number >= min_move and score_cp is not None:
-            if abs(score_cp) < 29000:
-                # Build the position FEN string for saving
-                # We store as "startpos + moves" — the trainer will
-                # need to convert this to a proper FEN using a chess library
-                # For now store the move sequence compactly
-                pos_key = STARTING_FEN + ' | ' + ' '.join(moves)
-                positions.append((pos_key, score_cp))
+        # Record this position if:
+        #   - Past the opening (move >= min_move)
+        #   - Score is valid (not None)
+        #   - Not a forced mate (too extreme for training)
+        if (move_number >= min_move
+                and score_cp is not None
+                and abs(score_cp) < 29000):
+            pos_key = STARTING_FEN + ' | ' + ' '.join(moves)
+            positions.append((pos_key, score_cp))
 
         moves.append(best_move)
 
@@ -267,6 +310,22 @@ def run(total_games, depth, num_cores, output_file, append):
     if not os.path.exists(ENGINE_PATH):
         print(f"\n  ERROR: Engine not found at {ENGINE_PATH}")
         print("  Please run 'make' to compile the engine first.")
+        sys.exit(1)
+
+    # Quick sanity check — try launching one engine instance before
+    # spinning up all cores, so we get a clear error if something's wrong
+    print("  Testing engine startup...")
+    try:
+        test_engine = UCIEngine(ENGINE_PATH, depth)
+        score, move = test_engine.get_eval_and_move(STARTING_FEN)
+        test_engine.quit()
+        if move is None:
+            print("  ERROR: Engine started but returned no move from starting position.")
+            print("  Check that the engine is working correctly.")
+            sys.exit(1)
+        print(f"  Engine OK — test move: {move}, score: {score}cp")
+    except RuntimeError as e:
+        print(f"\n  ERROR: {e}")
         sys.exit(1)
 
     existing = count_existing(output_file) if append else 0
