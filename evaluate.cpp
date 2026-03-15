@@ -46,11 +46,13 @@ int ROOK_SEVENTH_RANK_BONUS   =  30;   // Rook on 7th rank
 int KNIGHT_OUTPOST_BONUS      =  20;   // Knight on protected outpost
 
 // ─────────────────────────────────────────
-// PIECE-SQUARE TABLES
-// Same values as evaluate.py
+// PIECE-SQUARE TABLES — MIDDLEGAME & ENDGAME
+// Each piece now has two tables. The score is blended
+// between them based on the current game phase.
 // ─────────────────────────────────────────
 
-const int PAWN_TABLE[64] = {
+// ── Pawns ──
+const int PAWN_MG[64] = {
      0,  0,  0,  0,  0,  0,  0,  0,
      5, 10, 10,-20,-20, 10, 10,  5,
      5, -5,-10,  0,  0,-10, -5,  5,
@@ -60,8 +62,19 @@ const int PAWN_TABLE[64] = {
     50, 50, 50, 50, 50, 50, 50, 50,
      0,  0,  0,  0,  0,  0,  0,  0,
 };
+const int PAWN_EG[64] = {
+     0,  0,  0,  0,  0,  0,  0,  0,
+    -5, -5, -5, -5, -5, -5, -5, -5,
+     0,  0,  0,  0,  0,  0,  0,  0,
+     5,  5,  5,  5,  5,  5,  5,  5,
+    15, 15, 15, 15, 15, 15, 15, 15,
+    25, 25, 25, 25, 25, 25, 25, 25,
+    50, 50, 50, 50, 50, 50, 50, 50,
+     0,  0,  0,  0,  0,  0,  0,  0,
+};
 
-const int KNIGHT_TABLE[64] = {
+// ── Knights ──
+const int KNIGHT_MG[64] = {
     -50,-40,-30,-30,-30,-30,-40,-50,
     -40,-20,  0,  5,  5,  0,-20,-40,
     -30,  5, 10, 15, 15, 10,  5,-30,
@@ -71,8 +84,19 @@ const int KNIGHT_TABLE[64] = {
     -40,-20,  0,  0,  0,  0,-20,-40,
     -50,-40,-30,-30,-30,-30,-40,-50,
 };
+const int KNIGHT_EG[64] = {
+    -60,-45,-35,-35,-35,-35,-45,-60,
+    -45,-25, -5,  0,  0, -5,-25,-45,
+    -35,  0, 10, 15, 15, 10,  0,-35,
+    -35,  0, 15, 20, 20, 15,  0,-35,
+    -35,  0, 15, 20, 20, 15,  0,-35,
+    -35,  0, 10, 15, 15, 10,  0,-35,
+    -45,-25, -5,  0,  0, -5,-25,-45,
+    -60,-45,-35,-35,-35,-35,-45,-60,
+};
 
-const int BISHOP_TABLE[64] = {
+// ── Bishops ──
+const int BISHOP_MG[64] = {
     -20,-10,-10,-10,-10,-10,-10,-20,
     -10,  5,  0,  0,  0,  0,  5,-10,
     -10, 10, 10, 10, 10, 10, 10,-10,
@@ -82,8 +106,19 @@ const int BISHOP_TABLE[64] = {
     -10,  0,  0,  0,  0,  0,  0,-10,
     -20,-10,-10,-10,-10,-10,-10,-20,
 };
+const int BISHOP_EG[64] = {
+    -20,-10,-10,-10,-10,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5, 10, 10,  5,  0,-10,
+    -10,  0, 10, 15, 15, 10,  0,-10,
+    -10,  0, 10, 15, 15, 10,  0,-10,
+    -10,  0,  5, 10, 10,  5,  0,-10,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -20,-10,-10,-10,-10,-10,-10,-20,
+};
 
-const int ROOK_TABLE[64] = {
+// ── Rooks ──
+const int ROOK_MG[64] = {
      0,  0,  0,  5,  5,  0,  0,  0,
     -5,  0,  0,  0,  0,  0,  0, -5,
     -5,  0,  0,  0,  0,  0,  0, -5,
@@ -93,8 +128,19 @@ const int ROOK_TABLE[64] = {
      5, 10, 10, 10, 10, 10, 10,  5,
      0,  0,  0,  0,  0,  0,  0,  0,
 };
+const int ROOK_EG[64] = {
+     5,  5,  5,  5,  5,  5,  5,  5,
+     5,  5,  5,  5,  5,  5,  5,  5,
+     0,  0,  5,  5,  5,  5,  0,  0,
+     0,  0,  5,  5,  5,  5,  0,  0,
+     0,  0,  5,  5,  5,  5,  0,  0,
+     0,  0,  0,  0,  0,  0,  0,  0,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5, -5,  0,  0,  0,  0, -5, -5,
+};
 
-const int QUEEN_TABLE[64] = {
+// ── Queens ──
+const int QUEEN_MG[64] = {
     -20,-10,-10, -5, -5,-10,-10,-20,
     -10,  0,  5,  0,  0,  0,  0,-10,
     -10,  5,  5,  5,  5,  5,  0,-10,
@@ -104,8 +150,19 @@ const int QUEEN_TABLE[64] = {
     -10,  0,  0,  0,  0,  0,  0,-10,
     -20,-10,-10, -5, -5,-10,-10,-20,
 };
+const int QUEEN_EG[64] = {
+    -30,-20,-15,-10,-10,-15,-20,-30,
+    -20,-10, -5,  0,  0, -5,-10,-20,
+    -15, -5,  5, 10, 10,  5, -5,-15,
+    -10,  0, 10, 15, 15, 10,  0,-10,
+    -10,  0, 10, 15, 15, 10,  0,-10,
+    -15, -5,  5, 10, 10,  5, -5,-15,
+    -20,-10, -5,  0,  0, -5,-10,-20,
+    -30,-20,-15,-10,-10,-15,-20,-30,
+};
 
-const int KING_TABLE_MG[64] = {
+// ── King ──
+const int KING_MG[64] = {
      20, 30, 10,  0,  0, 10, 30, 20,
      20, 20,  0,  0,  0,  0, 20, 20,
     -10,-20,-20,-20,-20,-20,-20,-10,
@@ -115,8 +172,7 @@ const int KING_TABLE_MG[64] = {
     -30,-40,-40,-50,-50,-40,-40,-30,
     -30,-40,-40,-50,-50,-40,-40,-30,
 };
-
-const int KING_TABLE_EG[64] = {
+const int KING_EG[64] = {
     -50,-30,-30,-30,-30,-30,-30,-50,
     -30,-30,  0,  0,  0,  0,-30,-30,
     -30,-10, 20, 30, 30, 20,-10,-30,
@@ -128,63 +184,113 @@ const int KING_TABLE_EG[64] = {
 };
 
 // ─────────────────────────────────────────
-// PIECE-SQUARE BONUS LOOKUP
+// GAME PHASE
+// Phase weights per piece type — how much each piece
+// contributes to the middlegame phase value.
+// Knights/bishops = 1, rooks = 2, queens = 4.
+// Maximum phase (all pieces) = 4*1 + 4*1 + 4*2 + 2*4 = 24
 // ─────────────────────────────────────────
 
-int piece_square_bonus(int piece_type, int sq_idx, int colour, bool endgame) {
-    // Mirror the square for Black (same as Python's mirrored index)
-    int table_sq = (colour == WHITE) ? sq_idx
-                                     : (7 - rank_of(sq_idx)) * 8 + file_of(sq_idx);
+const int PHASE_WEIGHT[7] = {0, 0, 1, 1, 2, 4, 0};
+const int MAX_PHASE        = 24;
 
-    switch (piece_type) {
-        case PAWN:   return PAWN_TABLE[table_sq];
-        case KNIGHT: return KNIGHT_TABLE[table_sq];
-        case BISHOP: return BISHOP_TABLE[table_sq];
-        case ROOK:   return ROOK_TABLE[table_sq];
-        case QUEEN:  return QUEEN_TABLE[table_sq];
-        case KING:   return endgame ? KING_TABLE_EG[table_sq]
-                                    : KING_TABLE_MG[table_sq];
-        default:     return 0;
-    }
-}
-
-// ─────────────────────────────────────────
-// ENDGAME DETECTION
-// ─────────────────────────────────────────
-
-bool is_endgame(const Board& board) {
-    for (int colour : {WHITE, BLACK}) {
-        int material = 0;
-        for (int sq_idx = 0; sq_idx < 64; sq_idx++) {
-            int piece = board.get_piece(sq_idx);
-            if (piece == EMPTY) continue;
-            if ((piece > 0) == (colour == WHITE)) {
-                int pt = std::abs(piece);
-                if (pt != PAWN && pt != KING) {
-                    material += PIECE_VALUES[pt];
-                }
-            }
-        }
-        if (material <= ENDGAME_THRESHOLD) return true;
-    }
-    return false;
-}
-
-// ─────────────────────────────────────────
-// MATERIAL AND PLACEMENT
-// ─────────────────────────────────────────
-
-int eval_material_and_placement(const Board& board, bool endgame) {
-    int score = 0;
+// Returns a phase value 0 (endgame) to MAX_PHASE (full middlegame)
+int game_phase(const Board& board) {
+    int phase = 0;
     for (int sq_idx = 0; sq_idx < 64; sq_idx++) {
         int piece = board.get_piece(sq_idx);
         if (piece == EMPTY) continue;
+        phase += PHASE_WEIGHT[std::abs(piece)];
+    }
+    return std::min(phase, MAX_PHASE);
+}
+
+// ─────────────────────────────────────────
+// PIECE-SQUARE BONUS LOOKUP
+// Returns the tapered (blended) bonus for a piece.
+// mg_score and eg_score are set by reference.
+// ─────────────────────────────────────────
+
+void piece_square_scores(int piece_type, int sq_idx, int colour,
+                         int& mg_score, int& eg_score) {
+    // Mirror square for Black
+    int table_sq = (colour == WHITE) ? sq_idx
+                                     : (7 - rank_of(sq_idx)) * 8 + file_of(sq_idx);
+    switch (piece_type) {
+        case PAWN:
+            mg_score = PAWN_MG[table_sq];
+            eg_score = PAWN_EG[table_sq];
+            break;
+        case KNIGHT:
+            mg_score = KNIGHT_MG[table_sq];
+            eg_score = KNIGHT_EG[table_sq];
+            break;
+        case BISHOP:
+            mg_score = BISHOP_MG[table_sq];
+            eg_score = BISHOP_EG[table_sq];
+            break;
+        case ROOK:
+            mg_score = ROOK_MG[table_sq];
+            eg_score = ROOK_EG[table_sq];
+            break;
+        case QUEEN:
+            mg_score = QUEEN_MG[table_sq];
+            eg_score = QUEEN_EG[table_sq];
+            break;
+        case KING:
+            mg_score = KING_MG[table_sq];
+            eg_score = KING_EG[table_sq];
+            break;
+        default:
+            mg_score = eg_score = 0;
+    }
+}
+
+// Legacy single-value lookup (used by king safety and other callers)
+int piece_square_bonus(int piece_type, int sq_idx, int colour, bool endgame) {
+    int mg, eg;
+    piece_square_scores(piece_type, sq_idx, colour, mg, eg);
+    return endgame ? eg : mg;
+}
+
+// ─────────────────────────────────────────
+// ENDGAME DETECTION (kept for king safety)
+// ─────────────────────────────────────────
+
+bool is_endgame(const Board& board) {
+    return game_phase(board) <= MAX_PHASE / 2;
+}
+
+// ─────────────────────────────────────────
+// MATERIAL AND PLACEMENT — TAPERED
+// Accumulates separate MG and EG scores, then blends them
+// ─────────────────────────────────────────
+
+int eval_material_and_placement(const Board& board, bool endgame) {
+    int mg_score = 0;
+    int eg_score = 0;
+
+    for (int sq_idx = 0; sq_idx < 64; sq_idx++) {
+        int piece = board.get_piece(sq_idx);
+        if (piece == EMPTY) continue;
+
         int colour     = (piece > 0) ? WHITE : BLACK;
         int piece_type = std::abs(piece);
-        score += colour * PIECE_VALUES[piece_type];
-        score += colour * piece_square_bonus(piece_type, sq_idx, colour, endgame);
+
+        // Material value is the same in MG and EG (for now)
+        mg_score += colour * PIECE_VALUES[piece_type];
+        eg_score += colour * PIECE_VALUES[piece_type];
+
+        // Piece-square bonus blended separately
+        int pst_mg, pst_eg;
+        piece_square_scores(piece_type, sq_idx, colour, pst_mg, pst_eg);
+        mg_score += colour * pst_mg;
+        eg_score += colour * pst_eg;
     }
-    return score;
+
+    // Blend based on phase
+    int phase = game_phase(board);
+    return (mg_score * phase + eg_score * (MAX_PHASE - phase)) / MAX_PHASE;
 }
 
 // ─────────────────────────────────────────
