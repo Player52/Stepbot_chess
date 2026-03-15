@@ -162,7 +162,8 @@ struct UCIEngine {
     Board    board;
     Searcher searcher;
     int      default_depth = 9;
-    int      max_depth     = 9;   // User-configurable via setoption
+    int      max_depth     = 9;
+    bool     use_book      = true;   // Can be disabled for data generation
 
     UCIEngine() : board(board_from_fen(STARTING_FEN)) {}
 
@@ -199,9 +200,8 @@ struct UCIEngine {
     void cmd_uci() {
         std::cout << "id name "   << ENGINE_NAME   << "\n";
         std::cout << "id author " << ENGINE_AUTHOR << "\n";
-        // MaxDepth: caps the search depth regardless of time controls
-        // Default 9 — fast enough for timed games, strong enough to play well
         std::cout << "option name MaxDepth type spin default 9 min 1 max 20\n";
+        std::cout << "option name UseBook type check default true\n";
         std::cout << "uciok\n";
         std::cout.flush();
     }
@@ -218,11 +218,15 @@ struct UCIEngine {
         }
 
         if (opt_name == "MaxDepth" && !opt_value.empty()) {
-            int val  = std::stoi(opt_value);
-            // Clamp to valid range
-            val      = std::max(1, std::min(20, val));
+            int val   = std::stoi(opt_value);
+            val       = std::max(1, std::min(20, val));
             max_depth = val;
             std::cerr << "  [Option] MaxDepth set to " << max_depth << "\n";
+        }
+        if (opt_name == "UseBook" && !opt_value.empty()) {
+            use_book = (opt_value == "true");
+            std::cerr << "  [Option] UseBook set to "
+                      << (use_book ? "true" : "false") << "\n";
         }
     }
 
@@ -280,11 +284,14 @@ struct UCIEngine {
         // "infinite" ignores max_depth — used for analysis mode
         if (infinite) depth = 99;
 
-        std::string book_move = book_lookup(board);
-        if (!book_move.empty()) {
-            std::cout << "bestmove " << book_move << "\n";
-            std::cout.flush();
-            return;
+        // Check opening book first (unless disabled)
+        if (use_book) {
+            std::string book_move = book_lookup(board);
+            if (!book_move.empty()) {
+                std::cout << "bestmove " << book_move << "\n";
+                std::cout.flush();
+                return;
+            }
         }
 
         int    our_time_ms = (board.turn == WHITE) ? wtime : btime;
