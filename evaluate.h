@@ -39,16 +39,25 @@ extern int ROOK_SEVENTH_RANK_BONUS;   // Rook on 7th rank (2nd for Black)
 extern int KNIGHT_OUTPOST_BONUS;      // Knight on advanced outpost square
 
 // ─────────────────────────────────────────
-// PIECE-SQUARE TABLES
+// PIECE-SQUARE TABLES — MIDDLEGAME & ENDGAME
 // ─────────────────────────────────────────
 
-extern const int PAWN_TABLE[64];
-extern const int KNIGHT_TABLE[64];
-extern const int BISHOP_TABLE[64];
-extern const int ROOK_TABLE[64];
-extern const int QUEEN_TABLE[64];
-extern const int KING_TABLE_MG[64];
-extern const int KING_TABLE_EG[64];
+extern const int PAWN_MG[64];
+extern const int PAWN_EG[64];
+extern const int KNIGHT_MG[64];
+extern const int KNIGHT_EG[64];
+extern const int BISHOP_MG[64];
+extern const int BISHOP_EG[64];
+extern const int ROOK_MG[64];
+extern const int ROOK_EG[64];
+extern const int QUEEN_MG[64];
+extern const int QUEEN_EG[64];
+extern const int KING_MG[64];
+extern const int KING_EG[64];
+
+// Game phase constants
+extern const int PHASE_WEIGHT[7];
+extern const int MAX_PHASE;
 
 // ─────────────────────────────────────────
 // EVALUATOR FUNCTIONS
@@ -57,7 +66,10 @@ extern const int KING_TABLE_EG[64];
 // Main evaluation — returns centipawns, positive = good for White
 int evaluate(const Board& board);
 
-// Sub-components (used by tune.cpp and tests)
+// Game phase (0 = full endgame, MAX_PHASE = full middlegame)
+int game_phase(const Board& board);
+
+// Sub-components
 bool is_endgame(const Board& board);
 int  eval_material_and_placement(const Board& board, bool endgame);
 int  eval_pawn_structure(const Board& board, bool endgame);
@@ -67,5 +79,7 @@ int  eval_bishop_pair(const Board& board);
 int  eval_rooks(const Board& board, bool endgame);
 int  eval_knight_outposts(const Board& board);
 
-// Helper: piece-square table lookup for a given piece and square
-int piece_square_bonus(int piece_type, int sq, int colour, bool endgame);
+// Piece-square lookups
+void piece_square_scores(int piece_type, int sq_idx, int colour,
+                         int& mg_score, int& eg_score);
+int  piece_square_bonus(int piece_type, int sq_idx, int colour, bool endgame);
