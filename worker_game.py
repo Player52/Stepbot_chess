@@ -166,13 +166,19 @@ if not r:
     print(f'ERROR: No readyok from engine', file=sys.stderr)
     sys.exit(1)
 
-# ── Play games ──
-all_positions = []
-for game_idx in range(NUM_GAMES):
-    positions = play_game(proc)
-    all_positions.extend(positions)
-    print(f'PROGRESS {game_idx + 1} {NUM_GAMES} {len(positions)}',
-          flush=True)
+# ── Play games — save after each one ──
+os.makedirs(os.path.dirname(OUT_FILE), exist_ok=True)
+total_positions = 0
+
+with open(OUT_FILE, 'w', encoding='utf-8') as out_f:
+    for game_idx in range(NUM_GAMES):
+        positions = play_game(proc)
+        for fen, score in positions:
+            out_f.write(f'{fen}|||{score}\n')
+        out_f.flush()   # Flush to disk immediately after each game
+        total_positions += len(positions)
+        print(f'PROGRESS {game_idx + 1} {NUM_GAMES} {len(positions)}',
+              flush=True)
 
 send(proc, 'quit')
 try:
@@ -180,10 +186,4 @@ try:
 except Exception:
     proc.kill()
 
-# ── Write results ──
-os.makedirs(os.path.dirname(OUT_FILE), exist_ok=True)
-with open(OUT_FILE, 'w', encoding='utf-8') as f:
-    for fen, score in all_positions:
-        f.write(f'{fen}|||{score}\n')
-
-print(f'DONE {len(all_positions)}', flush=True)
+print(f'DONE {total_positions}', flush=True)
