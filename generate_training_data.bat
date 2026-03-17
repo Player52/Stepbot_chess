@@ -11,7 +11,7 @@ echo   2. Standard     (500 games, depth 9, 5 cores)
 echo   3. Accurate     (200 games, depth 10, 5 cores)
 echo   4. Large        (1000 games, depth 9, 5 cores)
 echo   5. Custom
-echo   6. Append to existing dataset (200 games, depth 9)
+echo   6. Append to existing dataset (custom games)
 echo.
 set /p choice="Enter choice (1-6): "
 
@@ -41,7 +41,19 @@ if "%choice%"=="5" (
     goto end
 )
 if "%choice%"=="6" (
-    python generate_training_data.py --games 200 --depth 9 --cores 5 --append
+    echo.
+    echo How many games to append?
+    echo   Rough time guide at depth 9 with 5 cores:
+    echo     50  games  =  ~15 minutes
+    echo     100 games  =  ~30 minutes
+    echo     200 games  =  ~1 hour
+    echo     500 games  =  ~2.5 hours
+    echo     1000 games =  ~5 hours
+    echo.
+    set /p games="Number of games to append: "
+    set /p depth="Depth (9 or 10, default 9): "
+    if "!depth!"=="" set depth=9
+    python generate_training_data.py --games !games! --depth !depth! --cores 5 --append
     goto end
 )
 
