@@ -57,6 +57,8 @@ def wait_for(proc, keyword, timeout=15.0):
 
 
 def get_move_and_score(proc, moves):
+    # Clear TT before each evaluation to ensure genuine depth search
+    send(proc, 'ucinewgame')
     if moves:
         send(proc, 'position startpos moves ' + ' '.join(moves))
     else:
@@ -97,8 +99,6 @@ def get_move_and_score(proc, moves):
 
 
 def play_game(proc, min_move=8, max_moves=150):
-    send(proc, 'ucinewgame')
-
     opening = random.choice(OPENINGS)
     board   = chess.Board()
     moves   = []
