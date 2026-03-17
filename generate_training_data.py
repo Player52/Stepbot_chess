@@ -1,261 +1,101 @@
 # generate_training_data.py
-# Generates training positions for NNUE by running Stepbot self-play
-# using the compiled C++ engine for speed.
-#
-# Launches multiple engine instances in parallel, extracts positions
-# from each game with their evaluations, and saves to a training dataset.
+# Generates NNUE training positions by running Stepbot self-play.
+# Each worker is a separate process running worker_game.py.
 #
 # Usage:
-#   python generate_training_data.py                  # default settings
-#   python generate_training_data.py --games 1000     # 1000 games total
-#   python generate_training_data.py --depth 10       # eval at depth 10
-#   python generate_training_data.py --cores 5        # use 5 cores
-#
-# Output:
-#   Training_Data/positions.csv   — fen,score_cp per line
-#   Training_Data/stats.json      — generation statistics
+#   python generate_training_data.py
+#   python generate_training_data.py --games 1000 --depth 9 --cores 5
+#   python generate_training_data.py --append
 
 import subprocess
 import os
 import sys
 import argparse
-import threading
 import time
 import json
-import random
-import queue
+import tempfile
 
-SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR  = os.path.join(SCRIPT_DIR, 'Training_Data')
-OUTPUT_FILE = os.path.join(OUTPUT_DIR, 'positions.csv')
-STATS_FILE  = os.path.join(OUTPUT_DIR, 'stats.json')
+SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
+WORKER_SCRIPT = os.path.join(SCRIPT_DIR, 'worker_game.py')
+OUTPUT_DIR   = os.path.join(SCRIPT_DIR, 'Training_Data')
+OUTPUT_FILE  = os.path.join(OUTPUT_DIR, 'positions.csv')
+STATS_FILE   = os.path.join(OUTPUT_DIR, 'stats.json')
 
-ENGINE_PATH = os.path.join(SCRIPT_DIR, 'stepbot.exe')
+ENGINE_PATH  = os.path.join(SCRIPT_DIR, 'stepbot.exe')
 if not os.path.exists(ENGINE_PATH):
     ENGINE_PATH = os.path.join(SCRIPT_DIR, 'stepbot')
 
-STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
 # ─────────────────────────────────────────
-# UCI ENGINE WRAPPER
+# ENGINE TEST
 # ─────────────────────────────────────────
 
-class UCIEngine:
-    def __init__(self, engine_path, depth):
-        self.depth   = depth
-        self.alive   = False
+def test_engine(engine_path, depth):
+    try:
+        proc = subprocess.Popen(
+            [engine_path],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
 
-        # subprocess.Popen needs the path as a string — on Windows paths
-        # with spaces must be passed as a list (not a shell string) to
-        # avoid quoting issues. We also capture stderr now so we can
-        # report startup failures.
-        try:
-            self.proc = subprocess.Popen(
-                [engine_path],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-            )
-        except FileNotFoundError:
-            raise RuntimeError(f"Engine not found: {engine_path}")
-        except OSError as e:
-            raise RuntimeError(f"Failed to launch engine: {e}")
+        def send(cmd):
+            proc.stdin.write(cmd + '\n')
+            proc.stdin.flush()
 
-        # Verify the engine starts correctly
-        self._send('uci')
-        response = self._wait_for('uciok', timeout=15.0)
-        if not response:
-            stderr_out = self.proc.stderr.read(500) if self.proc.stderr else ''
-            raise RuntimeError(
-                f"Engine did not respond to 'uci'. "
-                f"Stderr: {stderr_out!r}"
-            )
+        def wait(keyword, timeout=10.0):
+            start = time.time()
+            while time.time() - start < timeout:
+                if proc.poll() is not None:
+                    return ''
+                line = proc.stdout.readline().strip()
+                if keyword in line:
+                    return line
+            return ''
 
-        self._send(f'setoption name MaxDepth value {depth}')
-        self._send('setoption name UseBook value false')
-        self._send('isready')
-        response = self._wait_for('readyok', timeout=15.0)
-        if not response:
-            raise RuntimeError("Engine did not respond to 'isready'.")
+        send('uci')
+        if not wait('uciok'):
+            return False, 'No uciok'
+        send(f'setoption name MaxDepth value {min(depth, 4)}')
+        send('setoption name UseBook value false')
+        send('isready')
+        if not wait('readyok'):
+            return False, 'No readyok'
+        send('position startpos')
+        send(f'go depth {min(depth, 4)}')
 
-        self.alive = True
-
-    def _send(self, cmd):
-        if self.proc.poll() is not None:
-            raise RuntimeError("Engine process has terminated unexpectedly.")
-        self.proc.stdin.write(cmd + '\n')
-        self.proc.stdin.flush()
-
-    def _wait_for(self, keyword, timeout=15.0):
+        score = None
+        move  = None
         start = time.time()
-        while time.time() - start < timeout:
-            # Check if process died
-            if self.proc.poll() is not None:
-                return ''
-            try:
-                line = self.proc.stdout.readline().strip()
-            except Exception:
-                return ''
-            if keyword in line:
-                return line
-        return ''
-
-    def get_eval_and_move(self, fen, moves=None):
-        """
-        Sets the position and searches to self.depth.
-        Returns (score_cp, best_move_uci).
-        Score is from White's perspective.
-        Returns (None, None) on timeout or engine death.
-        """
-        if self.proc.poll() is not None:
-            return None, None
-
-        if moves:
-            self._send(f'position fen {fen} moves {" ".join(moves)}')
-        else:
-            self._send(f'position fen {fen}')
-
-        self._send(f'go depth {self.depth}')
-
-        score_cp  = None
-        best_move = None
-        start     = time.time()
-
-        while time.time() - start < 120.0:
-            if self.proc.poll() is not None:
+        while time.time() - start < 30.0:
+            if proc.poll() is not None:
                 break
-            try:
-                line = self.proc.stdout.readline().strip()
-            except Exception:
-                break
-            if not line:
-                continue
-            if line.startswith('info') and 'score cp' in line:
+            line = proc.stdout.readline().strip()
+            if 'score cp' in line:
                 parts = line.split()
                 try:
-                    idx      = parts.index('cp')
-                    score_cp = int(parts[idx + 1])
-                except (ValueError, IndexError):
-                    pass
-            elif line.startswith('info') and 'score mate' in line:
-                parts = line.split()
-                try:
-                    idx      = parts.index('mate')
-                    mate_in  = int(parts[idx + 1])
-                    score_cp = 29000 if mate_in > 0 else -29000
-                except (ValueError, IndexError):
+                    score = int(parts[parts.index('cp') + 1])
+                except Exception:
                     pass
             elif line.startswith('bestmove'):
-                parts     = line.split()
-                best_move = parts[1] if len(parts) > 1 else None
+                parts = line.split()
+                move  = parts[1] if len(parts) > 1 else None
                 break
 
-        return score_cp, best_move
-
-    def quit(self):
+        send('quit')
         try:
-            if self.proc.poll() is None:
-                self._send('quit')
-                self.proc.wait(timeout=5.0)
+            proc.wait(timeout=3)
         except Exception:
-            try:
-                self.proc.kill()
-            except Exception:
-                pass
+            proc.kill()
 
-
-# ─────────────────────────────────────────
-# OPENING BOOK
-# Random opening lines to diversify training positions
-# ─────────────────────────────────────────
-
-OPENINGS = [
-    [],
-    ['e2e4'],
-    ['d2d4'],
-    ['c2c4'],
-    ['g1f3'],
-    ['e2e4', 'e7e5'],
-    ['e2e4', 'c7c5'],
-    ['e2e4', 'e7e6'],
-    ['e2e4', 'c7c6'],
-    ['d2d4', 'd7d5'],
-    ['d2d4', 'g8f6'],
-    ['e2e4', 'e7e5', 'g1f3'],
-    ['e2e4', 'c7c5', 'g1f3'],
-    ['d2d4', 'd7d5', 'c2c4'],
-    ['e2e4', 'e7e5', 'g1f3', 'b8c6'],
-    ['d2d4', 'g8f6', 'c2c4', 'e7e6'],
-    ['e2e4', 'e7e5', 'f1c4'],
-    ['d2d4', 'd7d5', 'c2c4', 'e7e6'],
-    ['e2e4', 'e7e5', 'g1f3', 'g8f6'],
-    ['c2c4', 'e7e5'],
-]
-
-
-# ─────────────────────────────────────────
-# GAME PLAYER
-# Plays one complete game and records positions + evaluations
-# ─────────────────────────────────────────
-
-def play_game(engine, min_move=8, max_moves=150):
-    """
-    Plays a game from a random opening using the engine for both sides.
-    Records (position_string, score_cp) for positions from min_move onwards.
-    Score is always from White's perspective.
-    """
-    engine._send('ucinewgame')
-
-    opening   = random.choice(OPENINGS)
-    moves     = list(opening)
-    positions = []
-
-    for move_number in range(max_moves):
-        score_cp, best_move = engine.get_eval_and_move(STARTING_FEN, moves)
-
-        # Game over — no legal moves or engine error
-        if best_move is None or best_move == '0000':
-            break
-
-        # Record this position if:
-        #   - Past the opening (move >= min_move)
-        #   - Score is valid (not None)
-        #   - Not a forced mate (too extreme for training)
-        if (move_number >= min_move
-                and score_cp is not None
-                and abs(score_cp) < 29000):
-            pos_key = STARTING_FEN + ' | ' + ' '.join(moves)
-            positions.append((pos_key, score_cp))
-
-        moves.append(best_move)
-
-    return positions
-
-
-# ─────────────────────────────────────────
-# WORKER THREAD
-# One worker = one engine instance = one core
-# ─────────────────────────────────────────
-
-def worker(worker_id, engine_path, depth, num_games,
-           result_queue, progress_queue):
-    try:
-        engine        = UCIEngine(engine_path, depth)
-        all_positions = []
-
-        for game_idx in range(num_games):
-            positions = play_game(engine)
-            all_positions.extend(positions)
-            progress_queue.put((worker_id, game_idx + 1, num_games,
-                                 len(positions)))
-
-        engine.quit()
-        result_queue.put(('done', worker_id, all_positions))
+        if move is None:
+            return False, 'No bestmove returned'
+        return True, f'move={move} score={score}cp'
 
     except Exception as e:
-        result_queue.put(('error', worker_id, str(e)))
+        return False, str(e)
 
 
 # ─────────────────────────────────────────
@@ -265,10 +105,11 @@ def worker(worker_id, engine_path, depth, num_games,
 def deduplicate(positions):
     seen   = set()
     unique = []
-    for pos, score in positions:
-        if pos not in seen:
-            seen.add(pos)
-            unique.append((pos, score))
+    for fen, score in positions:
+        key = ' '.join(fen.split()[:4])
+        if key not in seen:
+            seen.add(key)
+            unique.append((fen, score))
     return unique
 
 
@@ -281,9 +122,9 @@ def save_positions(positions, path, append=False):
     mode = 'a' if append else 'w'
     with open(path, mode, encoding='utf-8') as f:
         if not append:
-            f.write('position,score_cp\n')
-        for pos, score in positions:
-            f.write(f'"{pos}",{score}\n')
+            f.write('fen,score_cp\n')
+        for fen, score in positions:
+            f.write(f'"{fen}",{score}\n')
 
 
 def count_existing(path):
@@ -298,123 +139,145 @@ def count_existing(path):
 # ─────────────────────────────────────────
 
 def run(total_games, depth, num_cores, output_file, append):
-    print("=" * 60)
-    print("  Stepbot NNUE Training Data Generator")
-    print("=" * 60)
-    print(f"  Engine     : {ENGINE_PATH}")
-    print(f"  Games      : {total_games}")
-    print(f"  Depth      : {depth}")
-    print(f"  Cores      : {num_cores}")
-    print(f"  Output     : {output_file}")
+    print('=' * 60)
+    print('  Stepbot NNUE Training Data Generator')
+    print('=' * 60)
+    print(f'  Engine : {ENGINE_PATH}')
+    print(f'  Games  : {total_games}')
+    print(f'  Depth  : {depth}')
+    print(f'  Cores  : {num_cores}')
+    print(f'  Output : {output_file}')
+    print()
 
     if not os.path.exists(ENGINE_PATH):
-        print(f"\n  ERROR: Engine not found at {ENGINE_PATH}")
-        print("  Please run 'make' to compile the engine first.")
+        print(f'  ERROR: Engine not found at {ENGINE_PATH}')
         sys.exit(1)
 
-    # Quick sanity check — try launching one engine instance before
-    # spinning up all cores, so we get a clear error if something's wrong
-    print("  Testing engine startup...")
-    try:
-        test_engine = UCIEngine(ENGINE_PATH, depth)
-        score, move = test_engine.get_eval_and_move(STARTING_FEN)
-        test_engine.quit()
-        if move is None:
-            print("  ERROR: Engine started but returned no move from starting position.")
-            print("  Check that the engine is working correctly.")
-            sys.exit(1)
-        print(f"  Engine OK — test move: {move}, score: {score}cp")
-    except RuntimeError as e:
-        print(f"\n  ERROR: {e}")
+    if not os.path.exists(WORKER_SCRIPT):
+        print(f'  ERROR: worker_game.py not found at {WORKER_SCRIPT}')
         sys.exit(1)
+
+    print('  Testing engine...')
+    ok, msg = test_engine(ENGINE_PATH, depth)
+    if not ok:
+        print(f'  ERROR: {msg}')
+        sys.exit(1)
+    print(f'  Engine OK — {msg}')
+    print()
 
     existing = count_existing(output_file) if append else 0
     if existing > 0:
-        print(f"  Appending to {existing:,} existing positions.")
+        print(f'  Appending to {existing:,} existing positions.')
     else:
         append = False
 
-    print()
-
-    # Distribute games across cores
+    # Distribute games across workers
     base       = total_games // num_cores
     remainder  = total_games % num_cores
     games_each = [base + (1 if i < remainder else 0) for i in range(num_cores)]
 
-    result_q   = queue.Queue()
-    progress_q = queue.Queue()
-
-    threads = []
+    # Temp output file per worker
+    tmp_files = []
     for i in range(num_cores):
-        t = threading.Thread(
-            target=worker,
-            args=(i, ENGINE_PATH, depth, games_each[i],
-                  result_q, progress_q),
-            daemon=True
-        )
-        t.start()
-        threads.append(t)
-        # Stagger starts slightly to avoid disk contention
-        time.sleep(0.3)
+        fd, path = tempfile.mkstemp(suffix=f'_w{i}.txt')
+        os.close(fd)
+        tmp_files.append(path)
 
-    print(f"  {num_cores} engine instances started.")
+    # Launch workers
+    procs = []
+    for i in range(num_cores):
+        p = subprocess.Popen(
+            [sys.executable, WORKER_SCRIPT,
+             ENGINE_PATH,
+             str(games_each[i]),
+             str(depth),
+             tmp_files[i],
+             str(i)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        procs.append(p)
+        time.sleep(0.5)
+
+    print(f'  {num_cores} worker(s) launched.')
     print()
 
-    # Progress display
+    # Monitor
     start_time   = time.time()
-    workers_done = 0
-    all_positions = []
     game_counts  = [0] * num_cores
+    done         = [False] * num_cores
 
-    while workers_done < num_cores:
-        # Drain progress queue
-        try:
-            while True:
-                wid, game_num, total, pos_count = progress_q.get_nowait()
-                game_counts[wid] = game_num
+    while not all(done):
+        for i, p in enumerate(procs):
+            if done[i]:
+                continue
+            line = p.stdout.readline()
+            if not line:
+                if p.poll() is not None:
+                    done[i] = True
+                continue
+            line = line.strip()
+            if line.startswith('PROGRESS'):
+                parts = line.split()
+                game_counts[i] = int(parts[1])
                 total_done = sum(game_counts)
                 elapsed    = time.time() - start_time
-                rate       = total_done / elapsed if elapsed > 0 else 0
-                eta        = (total_games - total_done) / rate if rate > 0 else 0
-                print(f"\r  Games: {total_done}/{total_games} "
-                      f"| Core {wid}: {game_num}/{games_each[wid]} "
-                      f"| {rate:.1f} games/min "
-                      f"| ETA: {eta:.0f}s    ",
+                rate       = (total_done / elapsed * 60) if elapsed > 0 else 0
+                remaining  = total_games - total_done
+                eta        = (remaining / (rate / 60)) if rate > 0 else 0
+                print(f'\r  Games: {total_done}/{total_games} '
+                      f'| Core {i}: {parts[1]}/{games_each[i]} '
+                      f'| {rate:.1f} games/min '
+                      f'| ETA: {eta:.0f}s    ',
                       end='', flush=True)
-        except queue.Empty:
-            pass
+            elif line.startswith('DONE'):
+                done[i] = True
 
-        # Drain result queue
+        time.sleep(0.02)
+
+    for p in procs:
         try:
-            while True:
-                result = result_q.get_nowait()
-                if result[0] == 'done':
-                    _, wid, positions = result
-                    all_positions.extend(positions)
-                    workers_done += 1
-                elif result[0] == 'error':
-                    _, wid, err = result
-                    print(f"\n  Core {wid} error: {err}")
-                    workers_done += 1
-        except queue.Empty:
-            pass
-
-        time.sleep(0.2)
+            p.wait(timeout=5)
+        except Exception:
+            p.kill()
 
     elapsed = time.time() - start_time
-    print(f"\n\n  All cores finished in {elapsed:.0f}s.")
+    print(f'\n\n  All workers finished in {elapsed:.0f}s.')
 
-    # Deduplicate and save
-    print(f"  Raw positions collected: {len(all_positions):,}")
+    # Check stderr for errors
+    for i, p in enumerate(procs):
+        err = p.stderr.read() if p.stderr else ''
+        if err.strip():
+            print(f'  Core {i} error:\n{err[:500]}')
+
+    # Collect results
+    all_positions = []
+    for i, tmp_file in enumerate(tmp_files):
+        if os.path.exists(tmp_file):
+            try:
+                with open(tmp_file, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if '|||' in line:
+                            fen, score_str = line.rsplit('|||', 1)
+                            try:
+                                all_positions.append((fen, int(score_str)))
+                            except ValueError:
+                                pass
+                os.unlink(tmp_file)
+            except Exception as e:
+                print(f'  Warning: could not read worker {i} file: {e}')
+
+    print(f'  Raw positions : {len(all_positions):,}')
     unique = deduplicate(all_positions)
-    print(f"  After deduplication:     {len(unique):,}")
+    print(f'  After dedup   : {len(unique):,}')
 
     save_positions(unique, output_file, append=append)
     total_saved = existing + len(unique)
-    print(f"  Total in dataset:        {total_saved:,}")
-    print(f"  Saved to: {output_file}")
+    print(f'  Total saved   : {total_saved:,}')
 
-    # Stats
     stats = {
         'total_positions':      total_saved,
         'new_positions':        len(unique),
@@ -424,37 +287,25 @@ def run(total_games, depth, num_cores, output_file, append):
         'elapsed_seconds':      round(elapsed, 1),
         'positions_per_second': round(len(unique) / elapsed, 1) if elapsed > 0 else 0,
     }
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     with open(STATS_FILE, 'w') as f:
         json.dump(stats, f, indent=2)
 
     print()
-    print("=" * 60)
-    print(f"  Done! {len(unique):,} new positions saved.")
-    print(f"  Rate: {stats['positions_per_second']:.1f} positions/sec")
-    print(f"  Next step: python train_nnue.py")
-    print("=" * 60)
+    print('=' * 60)
+    print(f'  Done! {len(unique):,} new positions saved.')
+    if elapsed > 0 and len(unique) > 0:
+        print(f'  Rate: {stats["positions_per_second"]:.1f} positions/sec')
+    print(f'  Next: python train_nnue.py')
+    print('=' * 60)
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(
-        description='Generate NNUE training positions from Stepbot self-play'
-    )
-    parser.add_argument('--games',  type=int, default=200,
-                        help='Total games to play (default: 200)')
-    parser.add_argument('--depth',  type=int, default=9,
-                        help='Evaluation depth (default: 9)')
-    parser.add_argument('--cores',  type=int, default=5,
-                        help='Parallel engine instances (default: 5)')
-    parser.add_argument('--output', default=OUTPUT_FILE,
-                        help='Output CSV file')
-    parser.add_argument('--append', action='store_true',
-                        help='Append to existing dataset')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--games',  type=int, default=200)
+    parser.add_argument('--depth',  type=int, default=9)
+    parser.add_argument('--cores',  type=int, default=5)
+    parser.add_argument('--output', default=OUTPUT_FILE)
+    parser.add_argument('--append', action='store_true')
     args = parser.parse_args()
-
-    run(
-        total_games = args.games,
-        depth       = args.depth,
-        num_cores   = args.cores,
-        output_file = args.output,
-        append      = args.append,
-    )
+    run(args.games, args.depth, args.cores, args.output, args.append)
