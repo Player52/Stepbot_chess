@@ -67,7 +67,14 @@ struct TTEntry {
 struct Searcher {
     std::unordered_map<Hash, TTEntry> tt;
 
-    // ── Killer moves ──
+    // ── PV Table ──
+    // Stores the principal variation — the sequence of best moves
+    // found during search. pv_table[ply][depth] = move at that ply.
+    // pv_length[ply] = how many moves are stored from that ply.
+    Move pv_table[MAX_DEPTH][MAX_DEPTH];
+    int  pv_length[MAX_DEPTH];
+
+    // Killer moves
     Move killers[MAX_DEPTH][2];
     int  killer_count[MAX_DEPTH];
 
