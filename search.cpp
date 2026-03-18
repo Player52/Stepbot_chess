@@ -21,8 +21,15 @@ Searcher::Searcher()
       opponent_move_count(0), last_go_time(-1)
 {
     std::memset(opponent_move_times, 0, sizeof(opponent_move_times));
-    std::memset(history, 0, sizeof(history));
-    std::memset(killer_count, 0, sizeof(killer_count));
+    std::memset(history,       0, sizeof(history));
+    std::memset(cont_history,  0, sizeof(cont_history));
+    std::memset(killer_count,  0, sizeof(killer_count));
+
+    // Initialise countermove table with null moves
+    for (int pt = 0; pt < 6; pt++)
+        for (int sq = 0; sq < 64; sq++)
+            countermove[pt][sq] = Move(0, 0);
+
     tt.reserve(1 << 20);
 }
 
@@ -105,8 +112,12 @@ Move Searcher::find_best_move(const Board& board, int max_depth,
                   << "ms  Soft=" << soft << "s  Hard=" << hard << "s\n";
     }
 
-    std::memset(history, 0, sizeof(history));
+    std::memset(history,      0, sizeof(history));
+    std::memset(cont_history, 0, sizeof(cont_history));
     std::memset(killer_count, 0, sizeof(killer_count));
+    for (int pt = 0; pt < 6; pt++)
+        for (int sq = 0; sq < 64; sq++)
+            countermove[pt][sq] = Move(0, 0);
 
     Hash current_hash = compute_hash(board);
     Move best_move(0, 0);
@@ -213,17 +224,14 @@ std::pair<Move, int> Searcher::search_root(const Board& board,
         int   score;
 
         if (i == 0) {
-            // First move: full window search
             score = -alphabeta(new_board, new_hash,
-                               depth - 1, -beta, -alpha, 1);
+                               depth - 1, -beta, -alpha, 1, move);
         } else {
-            // PVS: zero window search first
             score = -alphabeta(new_board, new_hash,
-                               depth - 1, -alpha - 1, -alpha, 1);
-            // If it beat alpha, confirm with full window
+                               depth - 1, -alpha - 1, -alpha, 1, move);
             if (score > alpha && score < beta)
                 score = -alphabeta(new_board, new_hash,
-                                   depth - 1, -beta, -alpha, 1);
+                                   depth - 1, -beta, -alpha, 1, move);
         }
 
         if (score > best_score) { best_score = score; best_move = move; }
@@ -236,7 +244,8 @@ std::pair<Move, int> Searcher::search_root(const Board& board,
 }
 
 int Searcher::alphabeta(const Board& board, Hash hash,
-                         int depth, int alpha, int beta, int ply) {
+                         int depth, int alpha, int beta, int ply,
+                         Move prev_move) {
     nodes_searched++;
 
     const Move* tt_move = nullptr;
@@ -261,7 +270,6 @@ int Searcher::alphabeta(const Board& board, Hash hash,
 
     auto moves = generate_legal_moves(board);
 
-    // ── No legal moves: checkmate or stalemate ──
     if (moves.empty()) {
         if (king_in_check(board, board.turn))
             return -(CHECKMATE_SCORE - ply);
@@ -270,10 +278,13 @@ int Searcher::alphabeta(const Board& board, Hash hash,
 
     bool in_check = king_in_check(board, board.turn);
 
+    // ── Check Extension ──
+    // If we're in check, extend depth by 1 — checks are forcing and
+    // tactical sequences involving checks must be fully resolved.
+    if (in_check)
+        depth += CHECK_EXTENSION;
+
     // ── Futility Pruning ──
-    // At depth 1, 2, or 3: if the static evaluation is so far below alpha
-    // that even a generous "best possible gain" can't reach it, skip this
-    // node entirely. Only safe when not in check and not near mate.
     if (depth >= 1 && depth <= 3
         && !in_check
         && alpha > -CHECKMATE_SCORE / 2
@@ -285,17 +296,12 @@ int Searcher::alphabeta(const Board& board, Hash hash,
     }
 
     // ── Null Move Pruning ──
-    // Skip our turn and search at reduced depth. If the result is still
-    // >= beta even when we do nothing, prune — the position is too good
-    // for us for the opponent to do anything about it.
-    // Skipped when: already in a null search, in check, or depth too low.
     if (!in_null_move
         && depth >= 4
         && !in_check
         && beta  <  CHECKMATE_SCORE
         && alpha > -CHECKMATE_SCORE)
     {
-        // Flip the turn using XOR — safer than recomputing the full hash
         Hash null_hash = hash ^ BLACK_TO_MOVE;
         if (board.en_passant_sq != -1)
             null_hash ^= EN_PASSANT_RANDOM[file_of(board.en_passant_sq)];
@@ -304,21 +310,34 @@ int Searcher::alphabeta(const Board& board, Hash hash,
         null_board.turn          = -board.turn;
         null_board.en_passant_sq = -1;
 
-        // R=2 at shallow depth, R=3 deeper — never reduce to depth 0
         int R          = (depth >= 6) ? 3 : 2;
         int null_depth = std::max(1, depth - 1 - R);
 
         in_null_move = true;
         int null_score = -alphabeta(null_board, null_hash,
                                     null_depth,
-                                    -beta, -beta + 1, ply + 1);
+                                    -beta, -beta + 1, ply + 1,
+                                    Move(0, 0));
         in_null_move = false;
 
         if (null_score >= beta)
             return beta;
     }
 
-    moves = order_moves(board, moves, ply, tt_move);
+    // Get countermove for this position (best response to prev_move)
+    const Move* counter_move = nullptr;
+    Move        counter_storage(0, 0);
+    if (prev_move.from_sq != prev_move.to_sq || prev_move.from_sq != 0) {
+        int prev_piece = std::abs(board.get_piece(prev_move.to_sq));
+        if (prev_piece >= 1 && prev_piece <= 6) {
+            counter_storage = countermove[prev_piece - 1][prev_move.to_sq];
+            if (counter_storage.from_sq != counter_storage.to_sq
+                || counter_storage.from_sq != 0)
+                counter_move = &counter_storage;
+        }
+    }
+
+    moves = order_moves(board, moves, ply, tt_move, &prev_move);
 
     int  original_alpha = alpha;
     Move best_move(0, 0);
@@ -333,54 +352,52 @@ int Searcher::alphabeta(const Board& board, Hash hash,
         bool  is_capture = !board.is_empty(move.to_sq)
                            || move.to_sq == board.en_passant_sq;
         bool  is_promo   = (move.promotion != 0);
+        bool  gives_check = king_in_check(new_board, new_board.turn);
         int   score;
 
         if (move_idx == 0) {
-            // ── First move: full window (PVS) ──
-            // The first move after ordering is our best guess — search fully
             if (move_idx >= LMR_MIN_MOVE_INDEX
                 && depth  >= LMR_MIN_DEPTH
-                && !in_check && !is_capture && !is_promo)
+                && !in_check && !is_capture && !is_promo && !gives_check)
             {
                 int R = 1 + (move_idx >= 6 ? 1 : 0) + (depth >= 6 ? 1 : 0);
                 score = -alphabeta(new_board, new_hash,
-                                   depth - 1 - R, -alpha - 1, -alpha, ply + 1);
+                                   depth - 1 - R, -alpha - 1, -alpha,
+                                   ply + 1, move);
                 if (score > alpha)
                     score = -alphabeta(new_board, new_hash,
-                                       depth - 1, -beta, -alpha, ply + 1);
+                                       depth - 1, -beta, -alpha,
+                                       ply + 1, move);
             } else {
                 score = -alphabeta(new_board, new_hash,
-                                   depth - 1, -beta, -alpha, ply + 1);
+                                   depth - 1, -beta, -alpha,
+                                   ply + 1, move);
             }
         } else {
-            // ── Subsequent moves: zero window first (PVS) ──
-            // Assume they're worse than the best move found so far.
-            // Only re-search fully if they surprise us.
             int search_depth = depth - 1;
 
-            // Apply LMR to reduce depth for late quiet moves
             if (move_idx >= LMR_MIN_MOVE_INDEX
                 && depth  >= LMR_MIN_DEPTH
-                && !in_check && !is_capture && !is_promo)
+                && !in_check && !is_capture && !is_promo && !gives_check)
             {
                 int R = 1 + (move_idx >= 6 ? 1 : 0) + (depth >= 6 ? 1 : 0);
                 search_depth = depth - 1 - R;
             }
 
-            // Zero window search
             score = -alphabeta(new_board, new_hash,
-                               search_depth, -alpha - 1, -alpha, ply + 1);
+                               search_depth, -alpha - 1, -alpha,
+                               ply + 1, move);
 
-            // Re-search at full depth if it beat alpha and we reduced,
-            // or if it's within the window
             if (score > alpha && (search_depth < depth - 1 || score < beta))
                 score = -alphabeta(new_board, new_hash,
-                                   depth - 1, -beta, -alpha, ply + 1);
+                                   depth - 1, -beta, -alpha,
+                                   ply + 1, move);
         }
 
         if (score >= beta) {
             update_killers(move, ply);
-            update_history(board, move, depth);
+            update_history(board, move, depth, prev_move);
+            update_countermove(prev_move, move, board);
             tt_store(hash, depth, beta, TT_LOWER_BOUND, move);
             return beta;
         }
@@ -425,12 +442,25 @@ int Searcher::quiescence(const Board& board, Hash hash, int alpha, int beta) {
 std::vector<Move> Searcher::order_moves(const Board& board,
                                          std::vector<Move>& moves,
                                          int ply,
-                                         const Move* tt_move) {
+                                         const Move* tt_move,
+                                         const Move* prev_move) {
+    // Get prev move piece type for continuation history lookup
+    int prev_pt = 0, prev_to = 0;
+    bool has_prev = prev_move
+                    && (prev_move->from_sq != prev_move->to_sq
+                        || prev_move->from_sq != 0);
+    if (has_prev) {
+        int pp = board.get_piece(prev_move->to_sq);
+        prev_pt = std::abs(pp);
+        prev_to = prev_move->to_sq;
+    }
+
     std::vector<std::pair<int, Move>> scored;
     scored.reserve(moves.size());
 
     for (const Move& move : moves) {
         int score = 0;
+
         if (tt_move && move == *tt_move) {
             score = 20000;
         } else {
@@ -446,10 +476,32 @@ std::vector<Move> Searcher::order_moves(const Board& board,
                     score = 9000;
                 else if (killer_count[ply] > 1 && move == killers[ply][1])
                     score = 8999;
-                else
+                else {
+                    // History score
                     score = history[move.from_sq][move.to_sq];
+
+                    // Continuation history bonus — how good is this move
+                    // given the previous move?
+                    if (has_prev && prev_pt >= 1 && prev_pt <= 6) {
+                        int curr_pt = std::abs(board.get_piece(move.from_sq));
+                        if (curr_pt >= 1 && curr_pt <= 6) {
+                            score += cont_history[prev_pt-1][prev_to]
+                                                 [curr_pt-1][move.to_sq];
+                        }
+                    }
+
+                    // Countermove bonus
+                    if (has_prev) {
+                        int pp = std::abs(board.get_piece(prev_move->to_sq));
+                        if (pp >= 1 && pp <= 6) {
+                            if (countermove[pp-1][prev_move->to_sq] == move)
+                                score += 5000;
+                        }
+                    }
+                }
             }
         }
+
         scored.push_back({score, move});
     }
 
@@ -471,18 +523,28 @@ void Searcher::update_killers(const Move& move, int ply) {
     if (killer_count[ply] < 2) killer_count[ply]++;
 }
 
-void Searcher::update_history(const Board& board, const Move& move, int depth) {
-    if (board.is_empty(move.to_sq))
+void Searcher::update_history(const Board& board, const Move& move,
+                               int depth, const Move& prev_move) {
+    if (board.is_empty(move.to_sq)) {
         history[move.from_sq][move.to_sq] += depth * depth;
+        update_cont_history(prev_move, move, board, depth);
+    }
 }
 
-void Searcher::tt_store(Hash hash, int depth, int score,
-                         int flag, const Move& move) {
-    if (tt.size() >= 1000000) tt.clear();
-    tt[hash] = TTEntry(hash, depth, score, flag, move);
+void Searcher::update_cont_history(const Move& prev_move, const Move& move,
+                                    const Board& board, int depth) {
+    // Only update if we have a valid previous move
+    if (prev_move.from_sq == prev_move.to_sq && prev_move.from_sq == 0)
+        return;
+
+    int prev_piece = std::abs(board.get_piece(prev_move.to_sq));
+    int curr_piece = std::abs(board.get_piece(move.from_sq));
+
+    if (prev_piece < 1 || prev_piece > 6) return;
+    if (curr_piece < 1 || curr_piece > 6) return;
+
+    cont_history[prev_piece-1][prev_move.to_sq]
+                [curr_piece-1][move.to_sq] += depth * depth;
 }
 
-int Searcher::score_from_perspective(const Board& board) {
-    int score = evaluate(board);
-    return (board.turn == WHITE) ? score : -score;
-}
+void Searcher::update_countermove(const
