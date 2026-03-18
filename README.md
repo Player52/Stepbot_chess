@@ -29,7 +29,7 @@ Starts Stepbot in UCI mode, ready to receive commands.
 
 ### On Windows
 
-Double-click `stepbot.bat` to launch without opening a terminal manually.
+Double-click `stepbot.exe` to launch without opening a terminal manually. _This will also work for the same file on Linux or Mac_
 
 ---
 
