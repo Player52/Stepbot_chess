@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <vector>
 #include <cstdint>
+#include <cstring>
 
 const int CHECKMATE_SCORE = 100000;
 const int MAX_DEPTH       = 64;
@@ -28,22 +29,18 @@ const int LMR_MIN_DEPTH      = 3;
 const int LMR_MIN_MOVE_INDEX = 3;
 
 // ── Aspiration Windows ──
-// Start each iterative deepening iteration with a narrow window around
-// the previous score. If the result falls outside, widen and re-search.
-// Much cheaper than always searching with a full -inf/+inf window.
-const int ASPIRATION_INITIAL_DELTA = 50;   // ±50cp starting window
-const int ASPIRATION_MIN_DEPTH     = 4;    // Only use from depth 4 up
+const int ASPIRATION_INITIAL_DELTA = 50;
+const int ASPIRATION_MIN_DEPTH     = 4;
 
 // ── Futility Pruning ──
-// Near leaf nodes, if the static eval is so far below alpha that no
-// realistic move could catch up, skip searching that node entirely.
-// Indexed by remaining depth (1, 2, 3).
 const int FUTILITY_MARGIN[4] = {
-    0,     // depth 0 — unused (quiescence handles this)
-    150,   // depth 1 — one move can gain at most ~150cp
-    300,   // depth 2 — two moves ~300cp
-    500,   // depth 3 — three moves ~500cp
+    0, 150, 300, 500,
 };
+
+// ── Check Extensions ──
+// When a move gives check, extend search by this many plies.
+// Keeps tactical sequences involving checks fully visible.
+const int CHECK_EXTENSION = 1;
 
 struct TTEntry {
     Hash hash;
@@ -60,10 +57,25 @@ struct TTEntry {
 struct Searcher {
     std::unordered_map<Hash, TTEntry> tt;
 
+    // ── Killer moves ──
     Move killers[MAX_DEPTH][2];
     int  killer_count[MAX_DEPTH];
 
+    // ── History heuristic ──
+    // history[from][to] — how often this move caused a beta cutoff
     int history[64][64];
+
+    // ── Continuation History ──
+    // cont_history[piece_type][to_sq][piece_type][to_sq]
+    // Tracks how good a move is given the previous move.
+    // Indexed as [prev_piece_type-1][prev_to][curr_piece_type-1][curr_to]
+    // piece_type 1-6, so we use [6][64][6][64]
+    int cont_history[6][64][6][64];
+
+    // ── Countermove Heuristic ──
+    // countermove[piece_type-1][to_sq] = best response to that move
+    // When the opponent plays piece X to square Y, try this move first
+    Move countermove[6][64];
 
     int    nodes_searched;
     int    tt_hits;
@@ -71,7 +83,6 @@ struct Searcher {
     double time_limit;
     double soft_limit;
 
-    // Prevents two null moves in a row (would be unsound)
     bool   in_null_move;
 
     double opponent_move_times[200];
@@ -96,22 +107,29 @@ struct Searcher {
     std::pair<Move, int> search_root(const Board& board, Hash hash,
                                      int depth, int prev_score);
 
+    // prev_move: the move that led to this position (for cont_history)
     int alphabeta(const Board& board, Hash hash,
-                  int depth, int alpha, int beta, int ply);
+                  int depth, int alpha, int beta, int ply,
+                  Move prev_move = Move(0, 0));
 
     int quiescence(const Board& board, Hash hash, int alpha, int beta);
 
+    // order_moves now takes the previous move for countermove lookup
     std::vector<Move> order_moves(const Board& board,
                                   std::vector<Move>& moves,
                                   int ply,
-                                  const Move* tt_move = nullptr);
+                                  const Move* tt_move  = nullptr,
+                                  const Move* prev_move = nullptr);
 
     void update_killers(const Move& move, int ply);
-    void update_history(const Board& board, const Move& move, int depth);
+    void update_history(const Board& board, const Move& move,
+                        int depth, const Move& prev_move);
+    void update_cont_history(const Move& prev_move, const Move& move,
+                             const Board& board, int depth);
+    void update_countermove(const Move& prev_move, const Move& response,
+                            const Board& board);
 
     void tt_store(Hash hash, int depth, int score, int flag, const Move& move);
-
-    int score_from_perspective(const Board& board);
-
+    int  score_from_perspective(const Board& board);
     bool time_up() const;
 };
