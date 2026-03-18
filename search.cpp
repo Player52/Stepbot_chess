@@ -24,6 +24,7 @@ Searcher::Searcher()
     std::memset(history,       0, sizeof(history));
     std::memset(cont_history,  0, sizeof(cont_history));
     std::memset(killer_count,  0, sizeof(killer_count));
+    std::memset(pv_length,     0, sizeof(pv_length));
 
     // Initialise countermove table with null moves
     for (int pt = 0; pt < 6; pt++)
@@ -115,6 +116,7 @@ Move Searcher::find_best_move(const Board& board, int max_depth,
     std::memset(history,      0, sizeof(history));
     std::memset(cont_history, 0, sizeof(cont_history));
     std::memset(killer_count, 0, sizeof(killer_count));
+    std::memset(pv_length,    0, sizeof(pv_length));
     for (int pt = 0; pt < 6; pt++)
         for (int sq = 0; sq < 64; sq++)
             countermove[pt][sq] = Move(0, 0);
@@ -186,12 +188,20 @@ Move Searcher::find_best_move(const Board& board, int max_depth,
         int    elapsed_ms = (int)(elapsed * 1000);
         int    nps        = (elapsed > 0) ? (int)(nodes_searched / elapsed) : 0;
 
+        // Build PV string from pv_table
+        std::string pv_str;
+        for (int i = 0; i < pv_length[0]; i++) {
+            if (i > 0) pv_str += ' ';
+            pv_str += pv_table[0][i].to_uci();
+        }
+        if (pv_str.empty()) pv_str = best_move.to_uci();
+
         std::cout << "info depth "  << depth
                   << " score cp "   << best_score
                   << " nodes "      << nodes_searched
                   << " nps "        << nps
                   << " time "       << elapsed_ms
-                  << " pv "         << best_move.to_uci()
+                  << " pv "         << pv_str
                   << "\n";
         std::cout.flush();
 
@@ -247,6 +257,9 @@ int Searcher::alphabeta(const Board& board, Hash hash,
                          int depth, int alpha, int beta, int ply,
                          Move prev_move) {
     nodes_searched++;
+
+    // Initialise PV length for this ply
+    if (ply < MAX_DEPTH) pv_length[ply] = ply;
 
     const Move* tt_move = nullptr;
     Move        tt_move_storage(0, 0);
@@ -437,7 +450,20 @@ int Searcher::alphabeta(const Board& board, Hash hash,
             tt_store(hash, depth, beta, TT_LOWER_BOUND, move);
             return beta;
         }
-        if (score > alpha) { alpha = score; best_move = move; found_best = true; }
+        if (score > alpha) {
+            alpha      = score;
+            best_move  = move;
+            found_best = true;
+
+            // ── Update PV ──
+            // Store this move and copy the child PV after it
+            if (ply < MAX_DEPTH) {
+                pv_table[ply][ply] = move;
+                for (int next = ply + 1; next < pv_length[ply + 1]; next++)
+                    pv_table[ply][next] = pv_table[ply + 1][next];
+                pv_length[ply] = pv_length[ply + 1];
+            }
+        }
     }
 
     if (found_best) {
@@ -522,7 +548,7 @@ std::vector<Move> Searcher::order_moves(const Board& board,
                         int curr_pt = std::abs(board.get_piece(move.from_sq));
                         if (curr_pt >= 1 && curr_pt <= 6) {
                             score += cont_history[prev_pt-1][prev_to]
-                                                 [curr_pt-1][move.to_sq];
+                                         [curr_pt-1][move.to_sq];
                         }
                     }
 
