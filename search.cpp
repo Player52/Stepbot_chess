@@ -548,4 +548,11 @@ void Searcher::update_countermove(const Move& prev_move, const Move& response,
 
 void Searcher::tt_store(Hash hash, int depth, int score,
                          int flag, const Move& move) {
-    if (tt.size() >= 1000000) tt.clear()
+    if (tt.size() >= 1000000) tt.clear();
+    tt[hash] = TTEntry(hash, depth, score, flag, move);
+}
+
+int Searcher::score_from_perspective(const Board& board) {
+    int score = evaluate(board);
+    return (board.turn == WHITE) ? score : -score;
+}
