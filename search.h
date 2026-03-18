@@ -42,6 +42,16 @@ const int FUTILITY_MARGIN[4] = {
 // Keeps tactical sequences involving checks fully visible.
 const int CHECK_EXTENSION = 1;
 
+// ── Singular Extensions ──
+// If the TT move is much better than all alternatives, extend it.
+const int SE_DEPTH_LIMIT = 4;    // Only try at depth >= 4
+const int SE_MARGIN      = 150;  // TT move must beat alternatives by this much
+
+// ── Probcut ──
+// If a capture looks strong even at reduced depth, prune early.
+const int PROBCUT_DEPTH  = 5;    // Only try at depth >= 5
+const int PROBCUT_MARGIN = 200;  // Must beat beta by this much to trigger
+
 struct TTEntry {
     Hash hash;
     int  depth;
@@ -132,4 +142,8 @@ struct Searcher {
     void tt_store(Hash hash, int depth, int score, int flag, const Move& move);
     int  score_from_perspective(const Board& board);
     bool time_up() const;
+
+    // Returns true if the TT move is singular (much better than all others)
+    bool is_singular(const Board& board, Hash hash, const Move& tt_move,
+                     int depth, int ply, int beta);
 };
