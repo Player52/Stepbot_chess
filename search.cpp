@@ -324,6 +324,34 @@ int Searcher::alphabeta(const Board& board, Hash hash,
             return beta;
     }
 
+    // ── Probcut ──
+    // If a capture is very likely to beat beta even at reduced depth,
+    // prune the rest of the search early.
+    // Only applies at higher depths where the overhead is worth it.
+    if (depth >= PROBCUT_DEPTH
+        && !in_check
+        && std::abs(beta) < CHECKMATE_SCORE / 2)
+    {
+        int probcut_beta  = beta + PROBCUT_MARGIN;
+        int probcut_depth = std::max(1, depth - 4);
+
+        for (const Move& m : moves) {
+            // Only try captures
+            if (board.is_empty(m.to_sq) && m.to_sq != board.en_passant_sq)
+                continue;
+
+            Board pb = apply_move(board, m);
+            Hash  ph = update_hash(hash, board, m, pb);
+
+            int pc_score = -alphabeta(pb, ph, probcut_depth,
+                                      -probcut_beta, -probcut_beta + 1,
+                                      ply + 1, m);
+
+            if (pc_score >= probcut_beta)
+                return pc_score;   // Probcut triggered — prune this node
+        }
+    }
+
     // Get countermove for move ordering (looked up in order_moves via prev_move)
     moves = order_moves(board, moves, ply, tt_move, &prev_move);
 
@@ -335,12 +363,32 @@ int Searcher::alphabeta(const Board& board, Hash hash,
         const Move& move = moves[move_idx];
         if (time_up()) break;
 
-        Board new_board  = apply_move(board, move);
-        Hash  new_hash   = update_hash(hash, board, move, new_board);
-        bool  is_capture = !board.is_empty(move.to_sq)
-                           || move.to_sq == board.en_passant_sq;
-        bool  is_promo   = (move.promotion != 0);
+        Board new_board   = apply_move(board, move);
+        Hash  new_hash    = update_hash(hash, board, move, new_board);
+        bool  is_capture  = !board.is_empty(move.to_sq)
+                            || move.to_sq == board.en_passant_sq;
+        bool  is_promo    = (move.promotion != 0);
         bool  gives_check = king_in_check(new_board, new_board.turn);
+
+        // ── Singular Extensions ──
+        // If this is the TT move and it appears to be the only good move
+        // (singular), extend its search by 1 ply.
+        int extension = 0;
+        if (move_idx == 0
+            && tt_move && move == *tt_move
+            && depth >= SE_DEPTH_LIMIT
+            && !in_check
+            && std::abs(beta) < CHECKMATE_SCORE / 2)
+        {
+            if (is_singular(board, hash, move, depth, ply, beta))
+                extension = 1;
+        }
+
+        // Check extension (applied to all moves that give check)
+        if (gives_check && extension == 0)
+            extension = CHECK_EXTENSION;
+
+        int search_depth_ext = depth - 1 + extension;
         int   score;
 
         if (move_idx == 0) {
@@ -350,35 +398,35 @@ int Searcher::alphabeta(const Board& board, Hash hash,
             {
                 int R = 1 + (move_idx >= 6 ? 1 : 0) + (depth >= 6 ? 1 : 0);
                 score = -alphabeta(new_board, new_hash,
-                                   depth - 1 - R, -alpha - 1, -alpha,
+                                   search_depth_ext - R, -alpha - 1, -alpha,
                                    ply + 1, move);
                 if (score > alpha)
                     score = -alphabeta(new_board, new_hash,
-                                       depth - 1, -beta, -alpha,
+                                       search_depth_ext, -beta, -alpha,
                                        ply + 1, move);
             } else {
                 score = -alphabeta(new_board, new_hash,
-                                   depth - 1, -beta, -alpha,
+                                   search_depth_ext, -beta, -alpha,
                                    ply + 1, move);
             }
         } else {
-            int search_depth = depth - 1;
+            int search_depth = search_depth_ext;
 
             if (move_idx >= LMR_MIN_MOVE_INDEX
                 && depth  >= LMR_MIN_DEPTH
                 && !in_check && !is_capture && !is_promo && !gives_check)
             {
                 int R = 1 + (move_idx >= 6 ? 1 : 0) + (depth >= 6 ? 1 : 0);
-                search_depth = depth - 1 - R;
+                search_depth = search_depth_ext - R;
             }
 
             score = -alphabeta(new_board, new_hash,
                                search_depth, -alpha - 1, -alpha,
                                ply + 1, move);
 
-            if (score > alpha && (search_depth < depth - 1 || score < beta))
+            if (score > alpha && (search_depth < search_depth_ext || score < beta))
                 score = -alphabeta(new_board, new_hash,
-                                   depth - 1, -beta, -alpha,
+                                   search_depth_ext, -beta, -alpha,
                                    ply + 1, move);
         }
 
@@ -521,7 +569,6 @@ void Searcher::update_history(const Board& board, const Move& move,
 
 void Searcher::update_cont_history(const Move& prev_move, const Move& move,
                                     const Board& board, int depth) {
-    // Only update if we have a valid previous move
     if (prev_move.from_sq == prev_move.to_sq && prev_move.from_sq == 0)
         return;
 
@@ -544,6 +591,39 @@ void Searcher::update_countermove(const Move& prev_move, const Move& response,
     if (prev_piece < 1 || prev_piece > 6) return;
 
     countermove[prev_piece-1][prev_move.to_sq] = response;
+}
+
+// ─────────────────────────────────────────
+// SINGULAR EXTENSION CHECK
+// ─────────────────────────────────────────
+
+bool Searcher::is_singular(const Board& board, Hash hash,
+                            const Move& tt_move, int depth,
+                            int ply, int beta) {
+    auto it = tt.find(hash);
+    if (it == tt.end()) return false;
+
+    int tt_score = it->second.score;
+    int s_beta   = tt_score - SE_MARGIN;
+    int s_depth  = std::max(1, depth / 2);
+
+    auto moves = generate_legal_moves(board);
+
+    for (const Move& m : moves) {
+        if (m == tt_move) continue;
+
+        Board new_board = apply_move(board, m);
+        Hash  new_hash  = update_hash(hash, board, m, new_board);
+
+        int score = -alphabeta(new_board, new_hash,
+                               s_depth, -s_beta - 1, -s_beta,
+                               ply + 1, m);
+
+        if (score >= s_beta) return false;
+        if (time_up())       return false;
+    }
+
+    return true;
 }
 
 void Searcher::tt_store(Hash hash, int depth, int score,
