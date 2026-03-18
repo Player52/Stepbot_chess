@@ -572,8 +572,7 @@ int eval_mobility(const Board& board) {
                         target += dirs[d];
                         if (target < 0 || target >= 64) break;
                         int nf = file_of(target);
-                        if (dirs[d] ==  1 && std::abs(pf-nf) != 1
-if (dirs[d] ==  1 && std::abs(pf-nf) != 1) break;
+                        if (dirs[d] ==  1 && std::abs(pf-nf) != 1) break;
                         if (dirs[d] == -1 && std::abs(pf-nf) != 1) break;
                         if (dirs[d] ==  9 && nf <= pf) break;
                         if (dirs[d] == -7 && nf <= pf) break;
