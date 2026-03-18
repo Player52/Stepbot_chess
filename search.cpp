@@ -324,19 +324,7 @@ int Searcher::alphabeta(const Board& board, Hash hash,
             return beta;
     }
 
-    // Get countermove for this position (best response to prev_move)
-    const Move* counter_move = nullptr;
-    Move        counter_storage(0, 0);
-    if (prev_move.from_sq != prev_move.to_sq || prev_move.from_sq != 0) {
-        int prev_piece = std::abs(board.get_piece(prev_move.to_sq));
-        if (prev_piece >= 1 && prev_piece <= 6) {
-            counter_storage = countermove[prev_piece - 1][prev_move.to_sq];
-            if (counter_storage.from_sq != counter_storage.to_sq
-                || counter_storage.from_sq != 0)
-                counter_move = &counter_storage;
-        }
-    }
-
+    // Get countermove for move ordering (looked up in order_moves via prev_move)
     moves = order_moves(board, moves, ply, tt_move, &prev_move);
 
     int  original_alpha = alpha;
@@ -547,4 +535,17 @@ void Searcher::update_cont_history(const Move& prev_move, const Move& move,
                 [curr_piece-1][move.to_sq] += depth * depth;
 }
 
-void Searcher::update_countermove(const
+void Searcher::update_countermove(const Move& prev_move, const Move& response,
+                                   const Board& board) {
+    if (prev_move.from_sq == prev_move.to_sq && prev_move.from_sq == 0)
+        return;
+
+    int prev_piece = std::abs(board.get_piece(prev_move.to_sq));
+    if (prev_piece < 1 || prev_piece > 6) return;
+
+    countermove[prev_piece-1][prev_move.to_sq] = response;
+}
+
+void Searcher::tt_store(Hash hash, int depth, int score,
+                         int flag, const Move& move) {
+    if (tt.size() >= 1000000) tt.clear()
