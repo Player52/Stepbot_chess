@@ -131,13 +131,13 @@ Alpha-beta pruning with iterative deepening and the following enhancements:
 - Futility pruning
 
 ### Opening Book
-JSON book covering main lines for both colours — Sicilian, Ruy Lopez, King's Indian, Queen's Gambit, London System, French, and Caro-Kann. Uses weighted random selection for variety. Weights update automatically after self-play sessions.
+JSON book covering main lines for both colours — Sicilian, Ruy Lopez, King's Indian, Queen's Gambit, London System, French, and Caro-Kann. Uses weighted random selection for variety. Weights update automatically after self-play sessions. In the interests of makeing sure Stepbot can be played in any game, you can turn this off under the setting of UseBook.
 
 ### Time Management
 When playing with a clock, Stepbot allocates time based on estimated moves remaining, incrementally deepens until the soft time limit is reached, and respects a hard limit to avoid flagging. The `MaxDepth` UCI option caps search depth regardless of time.
 
 ### Self-Play & Training
-Stepbot can play against itself to improve over time. Each session logs games as PGN, updates opening book weights, and tracks an ELO rating. Games can be analysed for blunders and evaluation weights can be tuned using Texel tuning.
+Stepbot can play against itself to improve over time. Each session logs games as PGN, updates opening book weights, and tracks an ELO rating. Games can be analysed for blunders and evaluation weights can be tuned using Texel tuning. This uses the Python System, and will be converted in a later update.
 
 ---
 
@@ -146,6 +146,7 @@ Stepbot can play against itself to improve over time. Each session logs games as
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `MaxDepth` | spin (1-20) | 9 | Maximum search depth per move |
+| `UseBook` | true/false | true | Use the opening book instead of calculating moves at the start of the game.
 
 To set an option manually:
 ```
@@ -176,6 +177,8 @@ setoption name MaxDepth value 11
 ---
 
 ## Self-Play Tools
+
+*Warning: These use the older python engine, and are due to be converted later.*
 
 ### Running a self-play session
 
