@@ -131,7 +131,7 @@ Alpha-beta pruning with iterative deepening and the following enhancements:
 - Futility pruning
 
 ### Opening Book
-JSON book covering main lines for both colours — Sicilian, Ruy Lopez, King's Indian, Queen's Gambit, London System, French, and Caro-Kann. Uses weighted random selection for variety. Weights update automatically after self-play sessions. In the interests of makeing sure Stepbot can be played in any game, you can turn this off under the setting of UseBook.
+JSON book covering main lines for both colours — Sicilian, Ruy Lopez, King's Indian, Queen's Gambit, London System, French, and Caro-Kann. Uses weighted random selection for variety. Weights update automatically after self-play sessions. In the interests of making sure Stepbot can be played in any game, you can turn this off under the setting of UseBook.
 
 ### Time Management
 When playing with a clock, Stepbot allocates time based on estimated moves remaining, incrementally deepens until the soft time limit is reached, and respects a hard limit to avoid flagging. The `MaxDepth` UCI option caps search depth regardless of time.
