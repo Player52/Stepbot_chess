@@ -1,5 +1,7 @@
 # Stepbot ♟️
 
+<img width="1000" height="980" alt="Image" src="https://github.com/user-attachments/assets/50b2b414-357a-4ea4-98d7-6b91f7870df8" />
+
 A chess engine built from scratch in C++, with the long-term goal of one day rivalling Stockfish.
 
 ---
