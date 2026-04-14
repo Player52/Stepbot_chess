@@ -303,7 +303,7 @@ def run(total_games, depth, num_cores, output_file, append):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--games',  type=int, default=200)
-    parser.add_argument('--depth',  type=int, default=9)
+    parser.add_argument('--depth',  type=int, default=13)
     parser.add_argument('--cores',  type=int, default=5)
     parser.add_argument('--output', default=OUTPUT_FILE)
     parser.add_argument('--append', action='store_true')

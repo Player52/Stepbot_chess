@@ -53,3 +53,9 @@ Hash compute_hash(const Board& board);
 // Incrementally update hash after a move (much faster than recomputing)
 Hash update_hash(Hash h, const Board& before, const Move& move,
                  const Board& after);
+
+// Overload for make/unmake: takes the UndoInfo fields instead of
+// the after-board, since after make_move the before state is gone.
+Hash update_hash(Hash h, const Board& after, const Move& move,
+                 int prev_ep_sq, const CastlingRights& prev_castling,
+                 int captured_piece);

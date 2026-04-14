@@ -45,6 +45,11 @@ int ROOK_SEMI_OPEN_FILE_BONUS =  15;   // Rook on semi-open file
 int ROOK_SEVENTH_RANK_BONUS   =  30;   // Rook on 7th rank
 int KNIGHT_OUTPOST_BONUS      =  20;   // Knight on protected outpost
 
+int TEMPO_MG                  =  18;   // Side to move (scaled by game phase)
+int CONNECTED_PASSED_BONUS    =  22;   // Adjacent-file passed pawn pairs
+int BACKWARD_PAWN_PENALTY     = -15;   // Pawn that can't advance safely
+int CONNECTED_ROOKS_BONUS     =  20;   // Two rooks with clear line between them
+
 // ─────────────────────────────────────────
 // PIECE-SQUARE TABLES — MIDDLEGAME & ENDGAME
 // Each piece now has two tables. The score is blended
@@ -78,8 +83,8 @@ const int KNIGHT_MG[64] = {
     -50,-40,-30,-30,-30,-30,-40,-50,
     -40,-20,  0,  5,  5,  0,-20,-40,
     -30,  5, 10, 15, 15, 10,  5,-30,
-    -30,  0, 15, 20, 20, 15,  0,-30,
-    -30,  5, 15, 20, 20, 15,  5,-30,
+    -40,  0, 15, 20, 20, 15,  0,-40,
+    -40,  5, 15, 20, 20, 15,  5,-40,
     -30,  0, 10, 15, 15, 10,  0,-30,
     -40,-20,  0,  0,  0,  0,-20,-40,
     -50,-40,-30,-30,-30,-30,-40,-50,
@@ -101,10 +106,10 @@ const int BISHOP_MG[64] = {
     -10,  5,  0,  0,  0,  0,  5,-10,
     -10, 10, 10, 10, 10, 10, 10,-10,
     -10,  0, 10, 10, 10, 10,  0,-10,
-    -10,  5,  5, 10, 10,  5,  5,-10,
-    -10,  0,  5, 10, 10,  5,  0,-10,
-    -10,  0,  0,  0,  0,  0,  0,-10,
-    -20,-10,-10,-10,-10,-10,-10,-20,
+    -20,  0,  5, 10, 10,  5,  0,-20,
+    -20,  0,  5, 10, 10,  5,  0,-20,
+    -20,  0,  0,  0,  0,  0,  0,-20,
+    -30,-20,-20,-20,-20,-20,-20,-30,
 };
 const int BISHOP_EG[64] = {
     -20,-10,-10,-10,-10,-10,-10,-20,
@@ -322,6 +327,7 @@ int eval_pawn_structure(const Board& board, bool endgame) {
         }
 
         int pawns_per_file[8] = {};
+        bool passed_sq[64]    = {};
 
         for (int sq_idx = 0; sq_idx < 64; sq_idx++) {
             int piece = board.get_piece(sq_idx);
@@ -351,10 +357,27 @@ int eval_pawn_structure(const Board& board, bool endgame) {
             }
 
             if (is_passed) {
+                passed_sq[sq_idx] = true;
                 int bonus_rank = (colour == WHITE) ? r : (7 - r);
                 score += sign * (endgame ? PASSED_PAWN_BONUS_EG[bonus_rank]
                                          : PASSED_PAWN_BONUS[bonus_rank]);
             }
+        }
+
+        // Connected passed pawns (adjacent files)
+        int conn = endgame ? (CONNECTED_PASSED_BONUS * 3 + 1) / 2
+                           : CONNECTED_PASSED_BONUS;
+        auto any_passed_on_file = [&](int file) -> bool {
+            if (file < 0 || file > 7) return false;
+            for (int r = 0; r < 8; r++)
+                if (passed_sq[sq(file, r)]) return true;
+            return false;
+        };
+        for (int sq_idx = 0; sq_idx < 64; sq_idx++) {
+            if (!passed_sq[sq_idx]) continue;
+            int f = file_of(sq_idx);
+            if (any_passed_on_file(f - 1) || any_passed_on_file(f + 1))
+                score += sign * conn;
         }
 
         // Doubled pawns
@@ -712,8 +735,136 @@ int eval_knight_outposts(const Board& board) {
 }
 
 // ─────────────────────────────────────────
+// BACKWARD PAWNS
+// A pawn is backward if:
+//   1. It has no friendly pawns behind it on adjacent files to support it
+//   2. The square directly in front of it is controlled by an enemy pawn
+// These pawns are weak because they can never be supported by other pawns.
+// ─────────────────────────────────────────
+
+int eval_backward_pawns(const Board& board) {
+    int score = 0;
+
+    for (int colour : {WHITE, BLACK}) {
+        int sign    = colour;
+        int enemy   = -colour;
+        int forward = (colour == WHITE) ? 1 : -1;  // rank direction of advance
+
+        for (int sq_idx = 0; sq_idx < 64; sq_idx++) {
+            if (board.get_piece(sq_idx) != colour * PAWN) continue;
+
+            int f = file_of(sq_idx);
+            int r = rank_of(sq_idx);
+
+            // Condition 1: no friendly pawn on adjacent files at or behind this rank
+            // (i.e. nothing that could advance to support it)
+            bool has_support = false;
+            for (int df : {-1, 1}) {
+                int af = f + df;
+                if (af < 0 || af > 7) continue;
+                // Look for a friendly pawn on the adjacent file at or behind this rank
+                for (int br = r; br != (colour == WHITE ? 0 : 7); br -= forward) {
+                    if (board.get_piece(sq(af, br)) == colour * PAWN) {
+                        has_support = true;
+                        break;
+                    }
+                }
+                if (has_support) break;
+            }
+            if (has_support) continue;
+
+            // Condition 2: the square in front is controlled by an enemy pawn
+            int front_rank = r + forward;
+            if (front_rank < 0 || front_rank > 7) continue;
+
+            bool front_controlled = false;
+            for (int df : {-1, 1}) {
+                int ef = f + df;
+                if (ef < 0 || ef > 7) continue;
+                // Enemy pawn attacks our front square diagonally
+                int enemy_pawn_rank = front_rank + forward; // one more step
+                if (enemy_pawn_rank < 0 || enemy_pawn_rank > 7) continue;
+                if (board.get_piece(sq(ef, enemy_pawn_rank)) == enemy * PAWN) {
+                    front_controlled = true;
+                    break;
+                }
+            }
+            if (!front_controlled) continue;
+
+            score += sign * BACKWARD_PAWN_PENALTY;
+        }
+    }
+
+    return score;
+}
+
+// ─────────────────────────────────────────
+// CONNECTED ROOKS
+// Two rooks of the same colour are connected if they share a rank or file
+// with no pieces between them. Connected rooks coordinate far better
+// and are much more dangerous as an attacking or defensive unit.
+// ─────────────────────────────────────────
+
+int eval_connected_rooks(const Board& board) {
+    int score = 0;
+
+    for (int colour : {WHITE, BLACK}) {
+        int sign = colour;
+
+        // Collect rook squares
+        int rook_sqs[10];
+        int rook_count = 0;
+        for (int sq_idx = 0; sq_idx < 64; sq_idx++) {
+            if (board.get_piece(sq_idx) == colour * ROOK && rook_count < 10)
+                rook_sqs[rook_count++] = sq_idx;
+        }
+
+        // Check each pair of rooks
+        for (int i = 0; i < rook_count; i++) {
+            for (int j = i + 1; j < rook_count; j++) {
+                int sq_a = rook_sqs[i];
+                int sq_b = rook_sqs[j];
+                int fa = file_of(sq_a), ra = rank_of(sq_a);
+                int fb = file_of(sq_b), rb = rank_of(sq_b);
+
+                bool connected = false;
+
+                if (ra == rb) {
+                    // Same rank — check for clear path between files
+                    int f_min = std::min(fa, fb);
+                    int f_max = std::max(fa, fb);
+                    bool clear = true;
+                    for (int f = f_min + 1; f < f_max; f++)
+                        if (board.get_piece(sq(f, ra)) != EMPTY) { clear = false; break; }
+                    if (clear) connected = true;
+                } else if (fa == fb) {
+                    // Same file — check for clear path between ranks
+                    int r_min = std::min(ra, rb);
+                    int r_max = std::max(ra, rb);
+                    bool clear = true;
+                    for (int r = r_min + 1; r < r_max; r++)
+                        if (board.get_piece(sq(fa, r)) != EMPTY) { clear = false; break; }
+                    if (clear) connected = true;
+                }
+
+                if (connected)
+                    score += sign * CONNECTED_ROOKS_BONUS;
+            }
+        }
+    }
+
+    return score;
+}
+
+// ─────────────────────────────────────────
 // MAIN EVALUATE
 // ─────────────────────────────────────────
+
+static int eval_tempo(const Board& board) {
+    int phase = game_phase(board);
+    int t     = (TEMPO_MG * phase) / MAX_PHASE;
+    return (board.turn == WHITE) ? t : -t;
+}
 
 int evaluate(const Board& board) {
     bool endgame = is_endgame(board);
@@ -725,5 +876,8 @@ int evaluate(const Board& board) {
     score += eval_bishop_pair(board);
     score += eval_rooks(board, endgame);
     score += eval_knight_outposts(board);
+    score += eval_backward_pawns(board);
+    score += eval_connected_rooks(board);
+    score += eval_tempo(board);
     return score;
 }

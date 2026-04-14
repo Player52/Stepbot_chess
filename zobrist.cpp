@@ -121,6 +121,76 @@ Hash compute_hash(const Board& board) {
 }
 
 // ─────────────────────────────────────────
+// UPDATE HASH (make/unmake overload)
+// Used after make_move when the pre-move board state is gone.
+// prev_ep_sq and prev_castling come from UndoInfo.
+// ─────────────────────────────────────────
+
+Hash update_hash(Hash h, const Board& after, const Move& move,
+                 int prev_ep_sq, const CastlingRights& prev_castling,
+                 int captured_piece) {
+    int colour = -after.turn;  // after.turn is the opponent; colour is who moved
+
+    // Reconstruct the piece that was on from_sq before the move
+    int moved_piece = move.promotion ? (colour * PAWN)
+                                     : after.get_piece(move.to_sq);
+    int piece_type = std::abs(moved_piece);
+
+    // Remove piece from its origin square
+    h ^= PIECE_SQUARE_TABLE[piece_index(moved_piece)][move.from_sq];
+
+    // Remove captured piece from destination (if any)
+    if (captured_piece != EMPTY)
+        h ^= PIECE_SQUARE_TABLE[piece_index(captured_piece)][move.to_sq];
+
+    // En passant: remove the captured pawn from its actual square
+    if (piece_type == PAWN && move.to_sq == prev_ep_sq) {
+        int ep_pawn_sq = move.to_sq - (colour == WHITE ? 8 : -8);
+        int ep_pawn    = -colour * PAWN;
+        h ^= PIECE_SQUARE_TABLE[piece_index(ep_pawn)][ep_pawn_sq];
+    }
+
+    // Add the landed piece to destination (promotion or normal)
+    int landed = after.get_piece(move.to_sq);
+    h ^= PIECE_SQUARE_TABLE[piece_index(landed)][move.to_sq];
+
+    // Castling — update rook
+    if (piece_type == KING) {
+        int diff = move.to_sq - move.from_sq;
+        if (diff == 2) {
+            int rook = colour * ROOK;
+            h ^= PIECE_SQUARE_TABLE[piece_index(rook)][move.from_sq + 3];
+            h ^= PIECE_SQUARE_TABLE[piece_index(rook)][move.from_sq + 1];
+        } else if (diff == -2) {
+            int rook = colour * ROOK;
+            h ^= PIECE_SQUARE_TABLE[piece_index(rook)][move.from_sq - 4];
+            h ^= PIECE_SQUARE_TABLE[piece_index(rook)][move.from_sq - 1];
+        }
+    }
+
+    // Flip turn
+    h ^= BLACK_TO_MOVE;
+
+    // XOR out old castling rights, XOR in new
+    if (prev_castling.K) h ^= CASTLING_RANDOM[0];
+    if (prev_castling.Q) h ^= CASTLING_RANDOM[1];
+    if (prev_castling.k) h ^= CASTLING_RANDOM[2];
+    if (prev_castling.q) h ^= CASTLING_RANDOM[3];
+    if (after.castling_rights.K) h ^= CASTLING_RANDOM[0];
+    if (after.castling_rights.Q) h ^= CASTLING_RANDOM[1];
+    if (after.castling_rights.k) h ^= CASTLING_RANDOM[2];
+    if (after.castling_rights.q) h ^= CASTLING_RANDOM[3];
+
+    // XOR out old en passant file, XOR in new
+    if (prev_ep_sq != -1)
+        h ^= EN_PASSANT_RANDOM[file_of(prev_ep_sq)];
+    if (after.en_passant_sq != -1)
+        h ^= EN_PASSANT_RANDOM[file_of(after.en_passant_sq)];
+
+    return h;
+}
+
+// ─────────────────────────────────────────
 // UPDATE HASH
 // Incrementally update after a move — much faster than recomputing.
 // Mirrors the logic in zobrist.py's update_hash().

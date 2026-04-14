@@ -158,7 +158,7 @@ if not r:
     print(f'ERROR: No uciok from engine', file=sys.stderr)
     sys.exit(1)
 
-send(proc, f'setoption name MaxDepth value {DEPTH}')
+send(proc, f'setoption name MaxDepth value {max(DEPTH, 20)}')
 send(proc, 'setoption name UseBook value false')
 send(proc, 'isready')
 r = wait_for(proc, 'readyok')

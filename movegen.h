@@ -56,9 +56,19 @@ std::vector<Move> generate_pseudo_legal_moves(const Board& board);
 // Apply a move and return the resulting board (does not modify original)
 Board apply_move(const Board& board, const Move& move);
 
+// Make/unmake: mutate the board in-place for search performance.
+// make_move returns an UndoInfo; pass it to unmake_move to restore.
+UndoInfo make_move(Board& board, const Move& move);
+void     unmake_move(Board& board, const Move& move, const UndoInfo& undo);
+
 // Check detection
 bool king_in_check(const Board& board, int colour);
 bool square_attacked_by(const Board& board, int sq, int attacker_colour);
+
+// Static exchange evaluation: material balance of captures on move.to_sq
+// starting with this move (positive = good for the side to move before the move).
+// Returns 0 for non-captures that are not quiet queen promotions.
+int static_exchange_eval(const Board& board, const Move& move);
 
 // Individual piece move generators (used internally)
 void pawn_moves  (const Board& board, int sq, std::vector<Move>& moves);

@@ -17,6 +17,7 @@
 #include "evaluate.h"
 #include "search.h"
 #include "zobrist.h"
+#include "stepbot_live_writer.h"
 
 #include <iostream>
 #include <sstream>
@@ -159,11 +160,12 @@ static std::string book_lookup(const Board& board) {
 }
 
 struct UCIEngine {
-    Board    board;
-    Searcher searcher;
-    int      default_depth = 9;
-    int      max_depth     = 9;
-    bool     use_book      = true;   // Can be disabled for data generation
+    Board              board;
+    Searcher           searcher;
+    std::vector<Hash>  position_history;   // Hashes of every position in the game
+    int                default_depth = 9;
+    int                max_depth     = 9;
+    bool               use_book      = true;   // Can be disabled for data generation
 
     UCIEngine() : board(board_from_fen(STARTING_FEN)) {}
 
@@ -207,7 +209,7 @@ struct UCIEngine {
     }
 
     void cmd_setoption(const std::vector<std::string>& tokens) {
-        // UCI setoption format: setoption name <name> value <value>
+        // UCI setoption format: setoption name <n> value <value>
         // We scan for "name" and "value" keywords in the token list
         std::string opt_name, opt_value;
         for (int i = 1; i < (int)tokens.size(); i++) {
@@ -237,6 +239,8 @@ struct UCIEngine {
 
     void cmd_ucinewgame() {
         board = board_from_fen(STARTING_FEN);
+        position_history.clear();
+        searcher.tt_new_game();
     }
 
     void cmd_position(const std::vector<std::string>& tokens) {
@@ -249,19 +253,27 @@ struct UCIEngine {
         } else if (tokens[1] == "fen") {
             std::string fen_str;
             int i = 2;
-            for (; i < (int)tokens.size() && i < 8; i++) {
+            for (; i < (int)tokens.size(); i++) {
                 if (tokens[i] == "moves") { move_start = i + 1; break; }
                 if (!fen_str.empty()) fen_str += ' ';
                 fen_str += tokens[i];
             }
             board = board_from_fen(fen_str);
         }
-        if (move_start >= 0)
-            for (int i = move_start; i < (int)tokens.size(); i++)
+        // Rebuild position history from scratch each time position is set
+        position_history.clear();
+        position_history.push_back(compute_hash(board));
+        if (move_start >= 0) {
+            for (int i = move_start; i < (int)tokens.size(); i++) {
                 board = apply_move(board, uci_to_move(tokens[i]));
+                position_history.push_back(compute_hash(board));
+            }
+        }
     }
 
     void cmd_go(const std::vector<std::string>& tokens) {
+        LiveWriter::Guard liveGuard;  // auto-deletes live file when go() returns
+
         // Start with max_depth as ceiling — can be lowered by "go depth N"
         // but never raised above max_depth
         int    depth    = max_depth;
@@ -284,13 +296,19 @@ struct UCIEngine {
         // "infinite" ignores max_depth — used for analysis mode
         if (infinite) depth = 99;
 
+        // movetime mode: uncap depth so the engine uses the full time budget
+        if (movetime > 0) depth = 99;
+
+        // clock mode (wtime/btime): also uncap depth so time management drives search
+        if (wtime > 0 || btime > 0) depth = 99;
+
         // Check opening book first (unless disabled)
         if (use_book) {
             std::string book_move = book_lookup(board);
             if (!book_move.empty()) {
                 std::cout << "bestmove " << book_move << "\n";
                 std::cout.flush();
-                return;
+                return;  // liveGuard destructor cleans up here too
             }
         }
 
@@ -301,7 +319,8 @@ struct UCIEngine {
                              ? our_time_ms : -1;
 
         Move best = searcher.find_best_move(board, depth,
-                                            tl_secs, budget_ms, our_inc_ms, -1);
+                                            tl_secs, budget_ms, our_inc_ms, -1,
+                                            position_history);
 
         if (best.from_sq == best.to_sq && best.from_sq == 0)
             std::cout << "bestmove 0000\n";

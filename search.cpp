@@ -3,6 +3,7 @@
 // C++ equivalent of search.py.
 
 #include "search.h"
+#include "stepbot_live_writer.h"
 #include <algorithm>
 #include <iostream>
 #include <chrono>
@@ -12,6 +13,26 @@ static double now() {
     using namespace std::chrono;
     auto t = steady_clock::now().time_since_epoch();
     return duration_cast<duration<double>>(t).count();
+}
+
+// Mate scores depend on root distance (ply). TT stores ply-independent encodings.
+static constexpr int MATE_VALUE_TT = CHECKMATE_SCORE - MAX_DEPTH - 32;
+static constexpr int QCHECK_MAX    = 2;
+
+static inline int value_to_tt(int v, int ply) {
+    if (v >= MATE_VALUE_TT)  return v + ply;
+    if (v <= -MATE_VALUE_TT) return v - ply;
+    return v;
+}
+
+static inline int value_from_tt(int v, int ply) {
+    if (v >= MATE_VALUE_TT)  return v - ply;
+    if (v <= -MATE_VALUE_TT) return v + ply;
+    return v;
+}
+
+static inline bool window_has_mate_bounds(int alpha, int beta) {
+    return alpha >= MATE_VALUE_TT || beta <= -MATE_VALUE_TT;
 }
 
 Searcher::Searcher()
@@ -25,13 +46,18 @@ Searcher::Searcher()
     std::memset(cont_history,  0, sizeof(cont_history));
     std::memset(killer_count,  0, sizeof(killer_count));
     std::memset(pv_length,     0, sizeof(pv_length));
+    std::memset(search_stack,  0, sizeof(search_stack));
 
     // Initialise countermove table with null moves
     for (int pt = 0; pt < 6; pt++)
         for (int sq = 0; sq < 64; sq++)
             countermove[pt][sq] = Move(0, 0);
 
-    tt.reserve(1 << 20);
+    tt.resize(TT_NUM_SLOTS);
+}
+
+void Searcher::tt_new_game() {
+    ++tt_generation;
 }
 
 bool Searcher::time_up() const {
@@ -86,7 +112,9 @@ Move Searcher::find_best_move(const Board& board, int max_depth,
                                double time_limit_secs,
                                int    time_budget_ms,
                                int    inc_ms,
-                               int    moves_to_go) {
+                               int    moves_to_go,
+                               const std::vector<Hash>& history) {
+    position_history = history;
     nodes_searched = 0;
     tt_hits        = 0;
     start_time     = now();
@@ -113,7 +141,7 @@ Move Searcher::find_best_move(const Board& board, int max_depth,
                   << "ms  Soft=" << soft << "s  Hard=" << hard << "s\n";
     }
 
-    std::memset(history,      0, sizeof(history));
+    std::memset(this->history,  0, sizeof(this->history));
     std::memset(cont_history, 0, sizeof(cont_history));
     std::memset(killer_count, 0, sizeof(killer_count));
     std::memset(pv_length,    0, sizeof(pv_length));
@@ -122,8 +150,12 @@ Move Searcher::find_best_move(const Board& board, int max_depth,
             countermove[pt][sq] = Move(0, 0);
 
     Hash current_hash = compute_hash(board);
+    search_stack[0]  = current_hash;
     Move best_move(0, 0);
     int  best_score = 0;
+
+    // Make a mutable copy of the board for the search
+    Board search_board = board;
 
     for (int depth = 1; depth <= max_depth; depth++) {
         if (soft_limit > 0 && (now() - start_time) >= soft_limit) break;
@@ -132,48 +164,34 @@ Move Searcher::find_best_move(const Board& board, int max_depth,
         Move iter_move(0, 0);
         int  iter_score = 0;
 
-        // ── Aspiration Windows ──
-        // From depth 4 upwards, search with a narrow window around the
-        // previous score. If the result falls outside, widen and retry.
-        // At depth 1-3 just do a full-width search — not worth the overhead.
         if (depth >= ASPIRATION_MIN_DEPTH && best_score != 0) {
             int delta = ASPIRATION_INITIAL_DELTA;
             int alpha = best_score - delta;
             int beta  = best_score + delta;
 
             while (true) {
-                auto [move, score] = search_root(board, current_hash,
+                auto [move, score] = search_root(search_board, current_hash,
                                                  depth, best_score);
                 iter_move  = move;
                 iter_score = score;
 
                 if (score <= alpha) {
-                    // Failed low — result was below our window
-                    // Widen the lower bound and retry
                     alpha -= delta;
                     delta *= 2;
                 } else if (score >= beta) {
-                    // Failed high — result was above our window
-                    // Widen the upper bound and retry
                     beta  += delta;
                     delta *= 2;
                 } else {
-                    // Result fit inside the window — done
                     break;
                 }
 
-                // Safety: if window has grown very wide, just go full width
                 if (alpha < -CHECKMATE_SCORE / 2) alpha = -CHECKMATE_SCORE - 1;
                 if (beta  >  CHECKMATE_SCORE / 2) beta  =  CHECKMATE_SCORE + 1;
-
-                // If we've blown out to a full window, stop resizing
                 if (alpha <= -CHECKMATE_SCORE && beta >= CHECKMATE_SCORE) break;
-
                 if (time_up()) break;
             }
         } else {
-            // Depth 1-3: full window search
-            auto [move, score] = search_root(board, current_hash,
+            auto [move, score] = search_root(search_board, current_hash,
                                              depth, best_score);
             iter_move  = move;
             iter_score = score;
@@ -206,6 +224,9 @@ Move Searcher::find_best_move(const Board& board, int max_depth,
                   << "\n";
         std::cout.flush();
 
+        // Update screensaver live file
+        LiveWriter::update(search_board, depth, best_score, (long long)nps, pv_str);
+
         // Hard stop — never start a new depth if we're already over time
         if (time_up()) break;
     }
@@ -213,13 +234,13 @@ Move Searcher::find_best_move(const Board& board, int max_depth,
     return best_move;
 }
 
-std::pair<Move, int> Searcher::search_root(const Board& board,
+std::pair<Move, int> Searcher::search_root(Board& board,
                                             Hash hash, int depth,
                                             int prev_score) {
     auto moves = generate_legal_moves(board);
     if (moves.empty()) return {Move(0, 0), 0};
 
-    pv_length[0] = 0;   // Initialise root PV length
+    pv_length[0] = 0;
     moves = order_moves(board, moves, 0);
 
     Move best_move  = moves[0];
@@ -231,31 +252,47 @@ std::pair<Move, int> Searcher::search_root(const Board& board,
 
     for (int i = 0; i < (int)moves.size(); i++) {
         const Move& move = moves[i];
-        Board new_board = apply_move(board, move);
-        Hash  new_hash  = update_hash(hash, board, move, new_board);
-        int   score;
+        pv_length[1] = 0;
+
+        UndoInfo undo = make_move(board, move);
+        Hash     new_hash = update_hash(hash, board, move,
+                                        undo.en_passant_sq,
+                                        undo.castling_rights,
+                                        undo.captured_piece);
+        int score;
 
         if (i == 0) {
-            score = -alphabeta(new_board, new_hash,
+            score = -alphabeta(board, new_hash,
                                depth - 1, -beta, -alpha, 1, move);
         } else {
-            score = -alphabeta(new_board, new_hash,
+            score = -alphabeta(board, new_hash,
                                depth - 1, -alpha - 1, -alpha, 1, move);
             if (score > alpha && score < beta)
-                score = -alphabeta(new_board, new_hash,
+                score = -alphabeta(board, new_hash,
                                    depth - 1, -beta, -alpha, 1, move);
         }
 
-        if (score > best_score) { best_score = score; best_move = move; }
+        unmake_move(board, move, undo);
+
+        if (score > best_score) {
+            best_score = score;
+            best_move  = move;
+            pv_table[0][0] = move;
+            int child_len = pv_length[1];
+            if (child_len > MAX_DEPTH - 1) child_len = MAX_DEPTH - 1;
+            for (int j = 0; j < child_len; j++)
+                pv_table[0][j + 1] = pv_table[1][j];
+            pv_length[0] = child_len + 1;
+        }
         alpha = std::max(alpha, score);
         if (time_up()) break;
     }
 
-    tt_store(hash, depth, best_score, TT_EXACT, best_move);
+    tt_store(hash, depth, best_score, TT_EXACT, best_move, 0);
     return {best_move, best_score};
 }
 
-int Searcher::alphabeta(const Board& board, Hash hash,
+int Searcher::alphabeta(Board& board, Hash hash,
                          int depth, int alpha, int beta, int ply,
                          Move prev_move) {
     nodes_searched++;
@@ -263,25 +300,52 @@ int Searcher::alphabeta(const Board& board, Hash hash,
     // Initialise PV length for this ply to 0 moves beyond this point
     if (ply < MAX_DEPTH) pv_length[ply] = 0;
 
+    // ── Repetition Detection ──
+    // Check game history AND the current search path.
+    // If this hash appears anywhere in either, this visit is a repetition.
+    if (ply > 0 && ply < MAX_DEPTH) {
+        int rep_count = 0;
+        for (Hash h : position_history)
+            if (h == hash) rep_count++;
+        for (int i = 0; i < ply; i++)
+            if (search_stack[i] == hash) rep_count++;
+        if (rep_count >= 1)
+            return REPETITION_SCORE;  // Never TT-cache this
+    }
+
+    // Record this position on the search path (cleared on return)
+    if (ply < MAX_DEPTH) search_stack[ply] = hash;
+    struct StackGuard {
+        Hash* slot;
+        ~StackGuard() { if (slot) *slot = 0; }
+    } guard{ ply < MAX_DEPTH ? &search_stack[ply] : nullptr };
+
     const Move* tt_move = nullptr;
     Move        tt_move_storage(0, 0);
 
-    auto it = tt.find(hash);
-    if (it != tt.end()) {
-        const TTEntry& entry = it->second;
-        if (entry.hash == hash && entry.depth >= depth) {
+    // TT lookup — skipped for positions already flagged as repetitions above
+    size_t      tt_idx = hash & (TT_NUM_SLOTS - 1);
+    const TTSlot& slot = tt[tt_idx];
+    if (slot.gen == tt_generation && slot.hash == hash) {
+        if (slot.depth >= depth) {
             tt_hits++;
-            if (entry.flag == TT_EXACT)       return entry.score;
-            if (entry.flag == TT_LOWER_BOUND) alpha = std::max(alpha, entry.score);
-            if (entry.flag == TT_UPPER_BOUND) beta  = std::min(beta,  entry.score);
-            if (alpha >= beta)                return entry.score;
+            int v = value_from_tt(slot.score, ply);
+            if (slot.flag == TT_EXACT)       return v;
+            if (slot.flag == TT_LOWER_BOUND) alpha = std::max(alpha, v);
+            if (slot.flag == TT_UPPER_BOUND) beta  = std::min(beta,  v);
+            if (alpha >= beta)               return v;
         }
-        tt_move_storage = it->second.move;
+        tt_move_storage = slot.move;
         tt_move         = &tt_move_storage;
     }
 
-    if (depth == 0)
-        return quiescence(board, hash, alpha, beta);
+    // In check at the horizon: search one full-width ply of evasions (never
+    // drop straight into capture-only quiescence while in check).
+    if (depth <= 0) {
+        if (!king_in_check(board, board.turn))
+            return quiescence(board, hash, alpha, beta, ply);
+        depth = 1;
+    }
 
     auto moves = generate_legal_moves(board);
 
@@ -293,21 +357,16 @@ int Searcher::alphabeta(const Board& board, Hash hash,
 
     bool in_check = king_in_check(board, board.turn);
 
-    // ── Check Extension ──
-    // If we're in check, extend depth by 1 — checks are forcing and
-    // tactical sequences involving checks must be fully resolved.
-    if (in_check)
-        depth += CHECK_EXTENSION;
-
     // ── Futility Pruning ──
     if (depth >= 1 && depth <= 3
         && !in_check
         && alpha > -CHECKMATE_SCORE / 2
-        && beta  <  CHECKMATE_SCORE / 2)
+        && beta  <  CHECKMATE_SCORE / 2
+        && !window_has_mate_bounds(alpha, beta))
     {
         int static_eval = score_from_perspective(board);
         if (static_eval + FUTILITY_MARGIN[depth] <= alpha)
-            return quiescence(board, hash, alpha, beta);
+            return quiescence(board, hash, alpha, beta, ply);
     }
 
     // ── Null Move Pruning ──
@@ -315,20 +374,20 @@ int Searcher::alphabeta(const Board& board, Hash hash,
         && depth >= 4
         && !in_check
         && beta  <  CHECKMATE_SCORE
-        && alpha > -CHECKMATE_SCORE)
+        && alpha > -CHECKMATE_SCORE
+        && !window_has_mate_bounds(alpha, beta))
     {
+        in_null_move = true;
+        Board null_board         = board;
+        null_board.turn          = -board.turn;
+        null_board.en_passant_sq = -1;
         Hash null_hash = hash ^ BLACK_TO_MOVE;
         if (board.en_passant_sq != -1)
             null_hash ^= EN_PASSANT_RANDOM[file_of(board.en_passant_sq)];
 
-        Board null_board         = board;
-        null_board.turn          = -board.turn;
-        null_board.en_passant_sq = -1;
-
         int R          = (depth >= 6) ? 3 : 2;
         int null_depth = std::max(1, depth - 1 - R);
 
-        in_null_move = true;
         int null_score = -alphabeta(null_board, null_hash,
                                     null_depth,
                                     -beta, -beta + 1, ply + 1,
@@ -351,19 +410,22 @@ int Searcher::alphabeta(const Board& board, Hash hash,
         int probcut_depth = std::max(1, depth - 4);
 
         for (const Move& m : moves) {
-            // Only try captures
             if (board.is_empty(m.to_sq) && m.to_sq != board.en_passant_sq)
                 continue;
 
-            Board pb = apply_move(board, m);
-            Hash  ph = update_hash(hash, board, m, pb);
+            UndoInfo pc_undo = make_move(board, m);
+            Hash     ph      = update_hash(hash, board, m,
+                                           pc_undo.en_passant_sq,
+                                           pc_undo.castling_rights,
+                                           pc_undo.captured_piece);
 
-            int pc_score = -alphabeta(pb, ph, probcut_depth,
+            int pc_score = -alphabeta(board, ph, probcut_depth,
                                       -probcut_beta, -probcut_beta + 1,
                                       ply + 1, m);
+            unmake_move(board, m, pc_undo);
 
             if (pc_score >= probcut_beta)
-                return pc_score;   // Probcut triggered — prune this node
+                return beta;
         }
     }
 
@@ -373,21 +435,36 @@ int Searcher::alphabeta(const Board& board, Hash hash,
     int  original_alpha = alpha;
     Move best_move(0, 0);
     bool found_best = false;
+    int  quiet_count = 0;  // LMP: count of quiet moves searched
 
     for (int move_idx = 0; move_idx < (int)moves.size(); move_idx++) {
         const Move& move = moves[move_idx];
         if (time_up()) break;
 
-        Board new_board   = apply_move(board, move);
-        Hash  new_hash    = update_hash(hash, board, move, new_board);
-        bool  is_capture  = !board.is_empty(move.to_sq)
-                            || move.to_sq == board.en_passant_sq;
-        bool  is_promo    = (move.promotion != 0);
-        bool  gives_check = king_in_check(new_board, new_board.turn);
+        bool is_capture  = !board.is_empty(move.to_sq)
+                           || move.to_sq == board.en_passant_sq;
+        bool is_promo    = (move.promotion != 0);
+
+        // ── Late Move Pruning (LMP) ──
+        if (depth >= 1 && depth <= 3
+            && !in_check
+            && !is_capture && !is_promo
+            && move_idx > 0
+            && !window_has_mate_bounds(alpha, beta)
+            && quiet_count >= LMP_THRESHOLD[depth])
+        {
+            continue;
+        }
+
+        UndoInfo undo    = make_move(board, move);
+        Hash     new_hash = update_hash(hash, board, move,
+                                        undo.en_passant_sq,
+                                        undo.castling_rights,
+                                        undo.captured_piece);
+
+        bool gives_check = king_in_check(board, board.turn);
 
         // ── Singular Extensions ──
-        // If this is the TT move and it appears to be the only good move
-        // (singular), extend its search by 1 ply.
         int extension = 0;
         if (move_idx == 0
             && tt_move && move == *tt_move
@@ -395,69 +472,108 @@ int Searcher::alphabeta(const Board& board, Hash hash,
             && !in_check
             && std::abs(beta) < CHECKMATE_SCORE / 2)
         {
+            unmake_move(board, move, undo);  // temporarily restore for is_singular
             if (is_singular(board, hash, move, depth, ply, beta))
                 extension = 1;
+            undo = make_move(board, move);   // re-apply
+            new_hash = update_hash(hash, board, move,
+                                   undo.en_passant_sq,
+                                   undo.castling_rights,
+                                   undo.captured_piece);
         }
 
-        // Check extension (applied to all moves that give check)
+        // ── Recapture Extension ──
+        if (extension == 0
+            && is_capture
+            && prev_move.from_sq != prev_move.to_sq
+            && move.to_sq == prev_move.to_sq)
+        {
+            extension = 1;
+        }
+
+        // ── Passed Pawn Extension ──
+        if (extension == 0 && !is_capture) {
+            // Check the piece on from_sq before the move — use undo to recover
+            // The pawn was there before make_move; board.turn is now flipped
+            int orig_colour = -board.turn;
+            int to_rank = move.to_sq / 8;
+            // We need to know if a pawn moved — check promotion or pawn type
+            // Since the piece is now on to_sq, check it directly
+            int moved_pt = std::abs(board.get_piece(move.to_sq));
+            if (move.promotion) moved_pt = PAWN;  // was a pawn before promo
+            if (moved_pt == PAWN) {
+                if ((orig_colour == WHITE && to_rank == 6) ||
+                    (orig_colour == BLACK && to_rank == 1))
+                    extension = 1;
+            }
+        }
+
+        // Check extension
         if (gives_check && extension == 0)
             extension = CHECK_EXTENSION;
 
         int search_depth_ext = depth - 1 + extension;
-        int   score;
+        int score;
+
+        bool is_bad_capture = is_capture &&
+                              static_exchange_eval(board, move) < -50;
+        if (!is_capture && !is_promo) quiet_count++;
+
+        bool allow_lmr = !window_has_mate_bounds(alpha, beta)
+                         && !is_bad_capture;
 
         if (move_idx == 0) {
-            if (move_idx >= LMR_MIN_MOVE_INDEX
+            if (allow_lmr
+                && move_idx >= LMR_MIN_MOVE_INDEX
                 && depth  >= LMR_MIN_DEPTH
                 && !in_check && !is_capture && !is_promo && !gives_check)
             {
                 int R = 1 + (move_idx >= 6 ? 1 : 0) + (depth >= 6 ? 1 : 0);
-                score = -alphabeta(new_board, new_hash,
+                score = -alphabeta(board, new_hash,
                                    search_depth_ext - R, -alpha - 1, -alpha,
                                    ply + 1, move);
                 if (score > alpha)
-                    score = -alphabeta(new_board, new_hash,
+                    score = -alphabeta(board, new_hash,
                                        search_depth_ext, -beta, -alpha,
                                        ply + 1, move);
             } else {
-                score = -alphabeta(new_board, new_hash,
+                score = -alphabeta(board, new_hash,
                                    search_depth_ext, -beta, -alpha,
                                    ply + 1, move);
             }
         } else {
             int search_depth = search_depth_ext;
-
-            if (move_idx >= LMR_MIN_MOVE_INDEX
+            if (allow_lmr
+                && move_idx >= LMR_MIN_MOVE_INDEX
                 && depth  >= LMR_MIN_DEPTH
                 && !in_check && !is_capture && !is_promo && !gives_check)
             {
                 int R = 1 + (move_idx >= 6 ? 1 : 0) + (depth >= 6 ? 1 : 0);
                 search_depth = search_depth_ext - R;
             }
-
-            score = -alphabeta(new_board, new_hash,
+            score = -alphabeta(board, new_hash,
                                search_depth, -alpha - 1, -alpha,
                                ply + 1, move);
-
             if (score > alpha && (search_depth < search_depth_ext || score < beta))
-                score = -alphabeta(new_board, new_hash,
+                score = -alphabeta(board, new_hash,
                                    search_depth_ext, -beta, -alpha,
                                    ply + 1, move);
         }
 
+        unmake_move(board, move, undo);
+
         if (score >= beta) {
-            update_killers(move, ply);
+            if (!is_capture)
+                update_killers(move, ply);
             update_history(board, move, depth, prev_move);
             update_countermove(prev_move, move, board);
-            tt_store(hash, depth, beta, TT_LOWER_BOUND, move);
+            tt_store(hash, depth, beta, TT_LOWER_BOUND, move, ply);
             return beta;
         }
         if (score > alpha) {
             alpha      = score;
             best_move  = move;
             found_best = true;
-
-            // ── Update PV ──
             if (ply < MAX_DEPTH) {
                 pv_table[ply][0] = move;
                 int child_len = pv_length[ply + 1];
@@ -470,34 +586,118 @@ int Searcher::alphabeta(const Board& board, Hash hash,
 
     if (found_best) {
         int flag = (alpha > original_alpha) ? TT_EXACT : TT_UPPER_BOUND;
-        tt_store(hash, depth, alpha, flag, best_move);
+        tt_store(hash, depth, alpha, flag, best_move, ply);
     }
 
     return alpha;
 }
 
-int Searcher::quiescence(const Board& board, Hash hash, int alpha, int beta) {
+int Searcher::quiescence(Board& board, Hash hash, int alpha, int beta,
+                          int ply, int qcheck_depth) {
     nodes_searched++;
 
-    int stand_pat = score_from_perspective(board);
-    if (stand_pat >= beta) return beta;
-    alpha = std::max(alpha, stand_pat);
+    bool in_check = king_in_check(board, board.turn);
+
+    int stand_pat = 0;
+    if (!in_check) {
+        stand_pat = score_from_perspective(board);
+        if (stand_pat >= beta) return beta;
+        alpha = std::max(alpha, stand_pat);
+
+        if (stand_pat + DELTA_MAX_GAIN + DELTA_MARGIN <= alpha
+            && alpha < CHECKMATE_SCORE / 2)
+        {
+            return alpha;
+        }
+    }
 
     auto moves = generate_legal_moves(board);
-    std::vector<Move> captures;
-    captures.reserve(8);
-    for (const Move& m : moves)
-        if (!board.is_empty(m.to_sq) || m.to_sq == board.en_passant_sq)
-            captures.push_back(m);
 
-    captures = order_moves(board, captures, 0);
+    if (in_check) {
+        moves = order_moves(board, moves, 0);
+        if (moves.empty())
+            return -(CHECKMATE_SCORE - ply);
+        for (const Move& move : moves) {
+            UndoInfo undo    = make_move(board, move);
+            Hash     new_hash = update_hash(hash, board, move,
+                                            undo.en_passant_sq,
+                                            undo.castling_rights,
+                                            undo.captured_piece);
+            int score = -quiescence(board, new_hash, -beta, -alpha,
+                                    ply + 1, qcheck_depth);
+            unmake_move(board, move, undo);
+            if (score >= beta) return beta;
+            alpha = std::max(alpha, score);
+        }
+        return alpha;
+    }
 
-    for (const Move& move : captures) {
-        Board new_board = apply_move(board, move);
-        Hash  new_hash  = update_hash(hash, board, move, new_board);
-        int   score     = -quiescence(new_board, new_hash, -beta, -alpha);
+    struct Tactical {
+        int  see_score;
+        Move m;
+        bool is_capture;
+    };
+    std::vector<Tactical> tactical;
+    tactical.reserve(moves.size());
+
+    for (const Move& m : moves) {
+        bool capture = !board.is_empty(m.to_sq) || m.to_sq == board.en_passant_sq;
+        int  mover   = board.get_piece(m.from_sq);
+        bool quiet_queen_promo =
+            mover != EMPTY && std::abs(mover) == PAWN &&
+            board.is_empty(m.to_sq) && m.promotion == QUEEN;
+        if (!capture && !quiet_queen_promo) continue;
+        int see = static_exchange_eval(board, m);
+        tactical.push_back({see, m, capture});
+    }
+
+    std::sort(tactical.begin(), tactical.end(),
+              [](const Tactical& a, const Tactical& b) {
+                  return a.see_score > b.see_score;
+              });
+
+    for (const Tactical& t : tactical) {
+        if (t.is_capture && t.see_score < 0 &&
+            stand_pat + t.see_score <= alpha)
+            continue;
+
+        UndoInfo undo    = make_move(board, t.m);
+        Hash     new_hash = update_hash(hash, board, t.m,
+                                        undo.en_passant_sq,
+                                        undo.castling_rights,
+                                        undo.captured_piece);
+        int score = -quiescence(board, new_hash, -beta, -alpha,
+                                ply + 1, qcheck_depth);
+        unmake_move(board, t.m, undo);
         if (score >= beta) return beta;
         alpha = std::max(alpha, score);
+    }
+
+    if (qcheck_depth < QCHECK_MAX) {
+        for (const Move& m : moves) {
+            bool capture = !board.is_empty(m.to_sq) || m.to_sq == board.en_passant_sq;
+            if (capture) continue;
+            int mover_pc = board.get_piece(m.from_sq);
+            bool in_tactical =
+                (mover_pc != EMPTY && std::abs(mover_pc) == PAWN &&
+                 board.is_empty(m.to_sq) && m.promotion == QUEEN);
+            if (in_tactical) continue;
+
+            UndoInfo undo = make_move(board, m);
+            bool gives_check = king_in_check(board, board.turn);
+            if (!gives_check) {
+                unmake_move(board, m, undo);
+                continue;
+            }
+            Hash nh = update_hash(hash, board, m,
+                                  undo.en_passant_sq,
+                                  undo.castling_rights,
+                                  undo.captured_piece);
+            int sc = -quiescence(board, nh, -beta, -alpha, ply + 1, qcheck_depth + 1);
+            unmake_move(board, m, undo);
+            if (sc >= beta) return beta;
+            alpha = std::max(alpha, sc);
+        }
     }
 
     return alpha;
@@ -526,15 +726,14 @@ std::vector<Move> Searcher::order_moves(const Board& board,
         int score = 0;
 
         if (tt_move && move == *tt_move) {
-            score = 20000;
+            score = 2000000;
         } else {
             int target = board.get_piece(move.to_sq);
             if (target != EMPTY) {
-                int victim_val   = std::abs(target) * 10;
-                int attacker_val = std::abs(board.get_piece(move.from_sq));
-                score = 10000 + victim_val - attacker_val;
+                int see = static_exchange_eval(board, move);
+                score   = 100000 + see;
             } else if (move.to_sq == board.en_passant_sq) {
-                score = 10000;
+                score = 100000 + static_exchange_eval(board, move);
             } else if (ply < MAX_DEPTH) {
                 if (killer_count[ply] > 0 && move == killers[ply][0])
                     score = 9000;
@@ -631,45 +830,58 @@ void Searcher::update_countermove(const Move& prev_move, const Move& response,
 
 bool Searcher::is_singular(const Board& board, Hash hash,
                             const Move& tt_move, int depth,
-                            int ply, int beta) {
-    // Look up TT score for this position
-    auto it = tt.find(hash);
-    if (it == tt.end()) return false;
+                            int ply, int /*beta*/) {
+    size_t i = hash & (TT_NUM_SLOTS - 1);
+    const TTSlot& slot = tt[i];
+    if (slot.gen != tt_generation || slot.hash != hash || slot.depth < 0)
+        return false;
 
-    int tt_score = it->second.score;
-
-    // Singular beta: if no other move beats this, TT move is singular
-    int s_beta  = tt_score - SE_MARGIN;
-    int s_depth = std::max(1, depth / 2);
+    int tt_score = value_from_tt(slot.score, ply);
+    int s_beta   = tt_score - SE_MARGIN;
+    int s_depth  = std::max(1, depth / 2);
 
     auto moves = generate_legal_moves(board);
 
+    // is_singular is called with the board in the pre-move state
+    // (we unmake before calling it, then re-make after).
+    // We need a mutable board copy for the sub-search.
+    Board search_board = board;
+
     for (const Move& m : moves) {
-        // Skip the TT move itself
         if (m == tt_move) continue;
 
-        Board new_board = apply_move(board, m);
-        Hash  new_hash  = update_hash(hash, board, m, new_board);
+        UndoInfo undo    = make_move(search_board, m);
+        Hash     new_hash = update_hash(hash, search_board, m,
+                                        undo.en_passant_sq,
+                                        undo.castling_rights,
+                                        undo.captured_piece);
 
-        // Search with narrow window at reduced depth
-        int score = -alphabeta(new_board, new_hash,
+        int score = -alphabeta(search_board, new_hash,
                                s_depth, -s_beta - 1, -s_beta,
                                ply + 1, m);
+        unmake_move(search_board, m, undo);
 
-        // If any other move beats s_beta, TT move is NOT singular
         if (score >= s_beta)
             return false;
 
         if (time_up()) return false;
     }
 
-    return true;   // No other move came close — TT move is singular
+    return true;
 }
 
 void Searcher::tt_store(Hash hash, int depth, int score,
-                         int flag, const Move& move) {
-    if (tt.size() >= 1000000) tt.clear();
-    tt[hash] = TTEntry(hash, depth, score, flag, move);
+                         int flag, const Move& move, int ply) {
+    size_t   i = hash & (TT_NUM_SLOTS - 1);
+    TTSlot& slot = tt[i];
+    if (slot.gen != tt_generation || slot.hash != hash || depth >= slot.depth) {
+        slot.hash  = hash;
+        slot.gen   = tt_generation;
+        slot.depth = depth;
+        slot.score = value_to_tt(score, ply);
+        slot.flag  = flag;
+        slot.move  = move;
+    }
 }
 
 int Searcher::score_from_perspective(const Board& board) {

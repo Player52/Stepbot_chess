@@ -8,7 +8,6 @@
 #include "movegen.h"
 #include "evaluate.h"
 #include "zobrist.h"
-#include <unordered_map>
 #include <vector>
 #include <cstdint>
 #include <cstring>
@@ -52,20 +51,37 @@ const int SE_MARGIN      = 150;  // TT move must beat alternatives by this much
 const int PROBCUT_DEPTH  = 5;    // Only try at depth >= 5
 const int PROBCUT_MARGIN = 200;  // Must beat beta by this much to trigger
 
-struct TTEntry {
-    Hash hash;
-    int  depth;
-    int  score;
-    int  flag;
-    Move move;
+// ── Delta Pruning (qsearch) ──
+// If even capturing the most valuable piece + margin can't raise alpha,
+// bail out of quiescence search early.
+const int DELTA_MARGIN        = 200;  // Safety buffer (cp)
+const int DELTA_MAX_GAIN      = 900;  // Queen value — best plausible single gain
 
-    TTEntry() : hash(0), depth(0), score(0), flag(TT_EXACT), move(0, 0) {}
-    TTEntry(Hash h, int d, int s, int f, Move m)
-        : hash(h), depth(d), score(s), flag(f), move(m) {}
+// ── Late Move Pruning (LMP) ──
+// At low depths, skip quiet moves beyond this count threshold.
+// Indexed by depth (0 unused, 1-3 active).
+const int LMP_THRESHOLD[4] = { 0, 3, 6, 10 };
+
+// ── Repetition / Contempt ──
+// Score returned when a position is a two-fold repetition during search.
+// Negative = engine tries to avoid repeating when it has a choice.
+const int REPETITION_SCORE = -10;  // cp penalty for repeating
+
+// Power-of-two bucket count; mask with (TT_NUM_SLOTS - 1) for indexing.
+constexpr size_t TT_NUM_SLOTS = 1 << 20;
+
+struct TTSlot {
+    Hash     hash  = 0;
+    uint32_t gen   = 0;
+    int      depth = -1;
+    int      score = 0;
+    int      flag  = TT_EXACT;
+    Move     move;
 };
 
 struct Searcher {
-    std::unordered_map<Hash, TTEntry> tt;
+    std::vector<TTSlot> tt;
+    uint32_t              tt_generation = 1;
 
     // ── PV Table ──
     // Stores the principal variation — the sequence of best moves
@@ -102,17 +118,29 @@ struct Searcher {
 
     bool   in_null_move;
 
+    // Position history: hashes of all positions from the start of the game.
+    // Used for repetition detection during search.
+    std::vector<Hash> position_history;
+
+    // Search path stack: hashes of positions on the current search path.
+    // Used alongside position_history for repetition detection.
+    Hash search_stack[MAX_DEPTH];
+
     double opponent_move_times[200];
     int    opponent_move_count;
     double last_go_time;
 
     Searcher();
 
+    // Invalidate transposition table entries from previous games (cheap age bump).
+    void tt_new_game();
+
     Move find_best_move(const Board& board, int max_depth,
                         double time_limit_secs  = -1.0,
                         int    time_budget_ms   = -1,
                         int    inc_ms           = 0,
-                        int    moves_to_go      = -1);
+                        int    moves_to_go      = -1,
+                        const std::vector<Hash>& history = {});
 
     void record_opponent_move_time(double seconds);
 
@@ -121,15 +149,17 @@ struct Searcher {
                                            int moves_to_go,
                                            int fullmove_number) const;
 
-    std::pair<Move, int> search_root(const Board& board, Hash hash,
+    std::pair<Move, int> search_root(Board& board, Hash hash,
                                      int depth, int prev_score);
 
     // prev_move: the move that led to this position (for cont_history)
-    int alphabeta(const Board& board, Hash hash,
+    int alphabeta(Board& board, Hash hash,
                   int depth, int alpha, int beta, int ply,
                   Move prev_move = Move(0, 0));
 
-    int quiescence(const Board& board, Hash hash, int alpha, int beta);
+    // ply: distance from root (mate scores); qcheck_depth: quiet-check plies in q-search
+    int quiescence(Board& board, Hash hash, int alpha, int beta,
+                   int ply, int qcheck_depth = 0);
 
     // order_moves now takes the previous move for countermove lookup
     std::vector<Move> order_moves(const Board& board,
@@ -146,7 +176,8 @@ struct Searcher {
     void update_countermove(const Move& prev_move, const Move& response,
                             const Board& board);
 
-    void tt_store(Hash hash, int depth, int score, int flag, const Move& move);
+    void tt_store(Hash hash, int depth, int score, int flag, const Move& move,
+                  int ply);
     int  score_from_perspective(const Board& board);
     bool time_up() const;
 

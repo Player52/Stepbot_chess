@@ -56,6 +56,19 @@ struct CastlingRights {
 };
 
 // ─────────────────────────────────────────
+// UNDO INFO
+// Captures everything needed to reverse a make_move call.
+// Stored on the search stack — no heap allocation.
+// ─────────────────────────────────────────
+
+struct UndoInfo {
+    int            captured_piece;   // Piece on to_sq before the move (EMPTY if none)
+    int            en_passant_sq;    // Previous en passant square
+    CastlingRights castling_rights;  // Previous castling rights
+    int            halfmove_clock;   // Previous halfmove clock
+};
+
+// ─────────────────────────────────────────
 // BOARD STRUCT
 // Holds the complete game state.
 // In Python this was a class — in C++ we use a struct.

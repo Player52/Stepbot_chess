@@ -38,6 +38,16 @@ extern int ROOK_SEMI_OPEN_FILE_BONUS; // Rook on file with only enemy pawns
 extern int ROOK_SEVENTH_RANK_BONUS;   // Rook on 7th rank (2nd for Black)
 extern int KNIGHT_OUTPOST_BONUS;      // Knight on advanced outpost square
 
+// Playing strength: tempo (tapered via game phase) and connected passers
+extern int TEMPO_MG;
+extern int CONNECTED_PASSED_BONUS;
+
+// Pawn structure additions
+extern int BACKWARD_PAWN_PENALTY;
+
+// Rook coordination
+extern int CONNECTED_ROOKS_BONUS;
+
 // ─────────────────────────────────────────
 // PIECE-SQUARE TABLES — MIDDLEGAME & ENDGAME
 // ─────────────────────────────────────────
@@ -78,6 +88,8 @@ int  eval_mobility(const Board& board);
 int  eval_bishop_pair(const Board& board);
 int  eval_rooks(const Board& board, bool endgame);
 int  eval_knight_outposts(const Board& board);
+int  eval_backward_pawns(const Board& board);
+int  eval_connected_rooks(const Board& board);
 
 // Piece-square lookups
 void piece_square_scores(int piece_type, int sq_idx, int colour,
