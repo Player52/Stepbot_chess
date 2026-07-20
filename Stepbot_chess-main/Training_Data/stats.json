@@ -1,0 +1,11 @@
+{
+  "total_positions": 20330,
+  "new_positions": 1642,
+  "games_played": 20,
+  "depth": 7,
+  "cores": 6,
+  "mode": "stepbot_vs_stepbot",
+  "engine2": "N/A",
+  "elapsed_seconds": 827.3,
+  "positions_per_second": 2.0
+}
