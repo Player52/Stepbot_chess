@@ -4,7 +4,9 @@
  * Drop this into your Stepbot source folder alongside board.h / search.h.
  * Tailored exactly to Stepbot's board representation — no guesswork needed.
  *
- * ── HOW TO INTEGRATE ─────────────────────────────────────────────────────────
+ * ——————————————————————————————————————————————————————
+ * HOW TO INTEGRATE
+ * ——————————————————————————————————————————————————————
  *
  * In main.cpp, add near the other #includes:
  *
@@ -14,7 +16,7 @@
  * early book-move returns clean up the file automatically:
  *
  *   void cmd_go(const std::vector<std::string>& tokens) {
- *       LiveWriter::Guard liveGuard;   // <── ADD THIS
+ *       LiveWriter::Guard liveGuard;   // <— ADD THIS
  *       // ... rest of cmd_go unchanged ...
  *   }
  *
@@ -30,7 +32,9 @@
  *   // ADD THIS LINE — all these variables already exist at this point:
  *   LiveWriter::update(search_board, depth, best_score, (long long)nps, pv_str);
  *
- * ── FILE LIFECYCLE ────────────────────────────────────────────────────────────
+ * ——————————————————————————————————————————————————————
+ * FILE LIFECYCLE
+ * ——————————————————————————————————————————————————————
  *
  * Created/overwritten:  once per depth iteration — always ~350 bytes, never grows
  * Deleted:              when cmd_go() returns (Guard destructor), covering:
@@ -46,10 +50,21 @@
 #include <fstream>
 #include <sstream>
 #include <cstdio>
+
+// Cross-platform directory creation
+#ifdef _WIN32
 #include <windows.h>  // For CreateDirectoryA
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #ifndef STEPBOT_LIVE_FILE
+#ifdef _WIN32
   #define STEPBOT_LIVE_FILE "C:\\temp\\stepbot_live.txt"
+#else
+  #define STEPBOT_LIVE_FILE "/tmp/stepbot_live.txt"
+#endif
 #endif
 
 namespace LiveWriter {
@@ -84,6 +99,15 @@ inline std::string buildBoardString(const Board& board) {
     return oss.str();
 }
 
+// Cross-platform directory creation
+inline void ensureDirectoryExists() {
+#ifdef _WIN32
+    CreateDirectoryA("C:\\temp", nullptr);  // no-op if already exists
+#else
+    mkdir("/tmp", 0777);  // no-op if already exists
+#endif
+}
+
 // Overwrites the live file — never appends, always ~350 bytes.
 inline void update(const Board& board,
                    int depth,
@@ -91,7 +115,7 @@ inline void update(const Board& board,
                    long long nps,
                    const std::string& bestMove)
 {
-    CreateDirectoryA("C:\\temp", nullptr);  // no-op if already exists
+    ensureDirectoryExists();
     std::ofstream f(STEPBOT_LIVE_FILE, std::ios::out | std::ios::trunc);
     if (!f.is_open()) return;
     f << buildBoardString(board);
