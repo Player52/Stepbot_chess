@@ -20,7 +20,7 @@ echo   8. Custom engine vs itself  (Stepbot scores positions)
 echo   9. Append using a second engine
 echo.
 set /p choice="Enter choice (1-9): "
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 if "%choice%"=="1" goto run1
 if "%choice%"=="2" goto run2
@@ -35,26 +35,26 @@ echo Invalid choice.
 goto end
 
 :run1
-python generate_training_data.py --games 200 --depth 9 --cores 5
+python training\generate_training_data.py --games 200 --depth 9 --cores 5
 goto end
 
 :run2
-python generate_training_data.py --games 500 --depth 9 --cores 5
+python training\generate_training_data.py --games 500 --depth 9 --cores 5
 goto end
 
 :run3
-python generate_training_data.py --games 200 --depth 10 --cores 5
+python training\generate_training_data.py --games 200 --depth 10 --cores 5
 goto end
 
 :run4
-python generate_training_data.py --games 1000 --depth 9 --cores 5
+python training\generate_training_data.py --games 1000 --depth 9 --cores 5
 goto end
 
 :run5
 set /p games="Number of games: "
 set /p depth="Depth (9 or 10): "
 set /p cores="Cores (recommend 5): "
-python generate_training_data.py --games !games! --depth !depth! --cores !cores!
+python training\generate_training_data.py --games !games! --depth !depth! --cores !cores!
 goto end
 
 :run6
@@ -72,7 +72,7 @@ set /p depth="Depth (9 or 10, default 9): "
 if "!depth!"=="" set depth=9
 set /p cores="Cores (default 5): "
 if "!cores!"=="" set cores=5
-python generate_training_data.py --games !games! --depth !depth! --cores !cores! --append
+python training\generate_training_data.py --games !games! --depth !depth! --cores !cores! --append
 goto end
 
 :run7
@@ -87,7 +87,7 @@ set /p depth="Depth (default 9): "
 if "!depth!"=="" set depth=9
 set /p cores="Cores (default 5): "
 if "!cores!"=="" set cores=5
-python generate_training_data.py --mode stepbot_vs_custom --engine2 "!engine2!" --games !games! --depth !depth! --cores !cores!
+python training\generate_training_data.py --mode stepbot_vs_custom --engine2 "!engine2!" --games !games! --depth !depth! --cores !cores!
 goto end
 
 :run8
@@ -102,7 +102,7 @@ set /p depth="Depth (default 9): "
 if "!depth!"=="" set depth=9
 set /p cores="Cores (default 5): "
 if "!cores!"=="" set cores=5
-python generate_training_data.py --mode custom_vs_custom --engine2 "!engine2!" --games !games! --depth !depth! --cores !cores!
+python training\generate_training_data.py --mode custom_vs_custom --engine2 "!engine2!" --games !games! --depth !depth! --cores !cores!
 goto end
 
 :run9
@@ -128,7 +128,7 @@ set /p depth="Depth (default 9): "
 if "!depth!"=="" set depth=9
 set /p cores="Cores (default 5): "
 if "!cores!"=="" set cores=5
-python generate_training_data.py --mode !mode! --engine2 "!engine2!" --games !games! --depth !depth! --cores !cores! --append
+python training\generate_training_data.py --mode !mode! --engine2 "!engine2!" --games !games! --depth !depth! --cores !cores! --append
 goto end
 
 :end

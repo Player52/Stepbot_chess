@@ -13,6 +13,7 @@
 import json
 import os
 import random
+from paths import OPENING_BOOK
 from board import WHITE, BLACK, EMPTY, PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING
 from board import square, file_of, rank_of, name_to_square
 from movegen import Move
@@ -85,13 +86,10 @@ class OpeningBook:
     def __init__(self, book_path=None):
         """
         Load the opening book from a JSON file.
-        book_path defaults to opening_book.json in the same directory.
+        book_path defaults to opening_book.json in the project root.
         """
         if book_path is None:
-            book_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                'opening_book.json'
-            )
+            book_path = OPENING_BOOK
 
         # Internal storage: hash -> list of [move_uci, weight] pairs
         self._book = {}
@@ -220,10 +218,7 @@ class OpeningBook:
         Called after self-play sessions to persist learning.
         """
         if book_path is None:
-            book_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                'opening_book.json'
-            )
+            book_path = OPENING_BOOK
 
         # Rebuild the moves list from internal storage
         # We need the original FENs — store them during load

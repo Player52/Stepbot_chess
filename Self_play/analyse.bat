@@ -14,16 +14,16 @@ set /p choice="Enter choice (1-3): "
 cd /d "%~dp0.."
 
 if "%choice%"=="1" (
-    python analyse.py --depth 3
+    python python\analyse.py --depth 3
     goto end
 )
 if "%choice%"=="2" (
-    python analyse.py --depth 4
+    python python\analyse.py --depth 4
     goto end
 )
 if "%choice%"=="3" (
     set /p pgn="Path to PGN file: "
-    python analyse.py --input "%pgn%" --depth 3
+    python python\analyse.py --input "%pgn%" --depth 3
     goto end
 )
 

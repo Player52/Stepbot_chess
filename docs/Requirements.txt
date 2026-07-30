@@ -1,0 +1,24 @@
+# Stepbot Chess Engine — Dependencies
+
+# ── Python (runtime) ──
+# Python 3.8 or higher required.
+
+# Legacy Python engine + self-play tools: standard library only
+#   sys, os, time, copy, json, random, math, argparse, re, datetime
+
+# NNUE training data generation (worker_game.py):
+python-chess>=1.999
+
+# Install:
+#   pip install -r Requirements.txt
+
+# ── C++ build (compile stepbot.exe) ──
+# Requires g++ with C++17 support.
+# On Windows, use MSYS2 MinGW x64:
+#   https://www.msys2.org
+#   pacman -S mingw-w64-x86_64-gcc
+#
+# Build from the project root:
+#   make
+#
+# The executable is written to scr/stepbot.exe (Windows) or scr/stepbot (Linux/Mac).

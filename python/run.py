@@ -1,6 +1,6 @@
 # run.py
-# Launcher for Stepbot chess engine.
-# Run this file to start the engine in UCI mode.
+# Launcher for the legacy Python Stepbot engine.
+# The primary engine is the C++ binary in scr/ — build with `make`.
 #
 # Usage:
 #   python run.py

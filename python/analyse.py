@@ -20,6 +20,7 @@ import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from paths import SELF_PLAY
 from board import (
     WHITE, BLACK, EMPTY,
     PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING,
@@ -33,9 +34,8 @@ from evaluate import Evaluator
 STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
 # Default file paths
-SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_INPUT  = os.path.join(SCRIPT_DIR, 'Self_play', 'selfplay_games.pgn')
-DEFAULT_OUTPUT = os.path.join(SCRIPT_DIR, 'Self_play', 'selfplay_analysis.pgn')
+DEFAULT_INPUT  = os.path.join(SELF_PLAY, 'selfplay_games.pgn')
+DEFAULT_OUTPUT = os.path.join(SELF_PLAY, 'selfplay_analysis.pgn')
 
 # ─────────────────────────────────────────
 # BLUNDER THRESHOLDS (centipawns)

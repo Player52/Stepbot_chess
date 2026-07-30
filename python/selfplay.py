@@ -19,6 +19,7 @@ import math
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from paths import SELF_PLAY
 from board import WHITE, BLACK, EMPTY, KING, PAWN, KNIGHT, BISHOP, ROOK, QUEEN
 from board import square, file_of, rank_of, square_name
 from engine import board_from_fen, board_to_fen
@@ -30,10 +31,8 @@ STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
 MAX_MOVES = 200
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-PGN_PATH = os.path.join(SCRIPT_DIR, 'Self_play', 'selfplay_games.pgn')
-ELO_PATH = os.path.join(SCRIPT_DIR, 'Self_play', 'elo_history.json')
+PGN_PATH = os.path.join(SELF_PLAY, 'selfplay_games.pgn')
+ELO_PATH = os.path.join(SELF_PLAY, 'elo_history.json')
 
 # ELO settings
 ELO_K          = 32      # K-factor — how much each game shifts the rating

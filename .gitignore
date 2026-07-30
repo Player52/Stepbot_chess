@@ -1,0 +1,27 @@
+# Build artifacts
+scr/*.o
+scr/*.exe
+scr/stepbot
+scr/smoke_tests
+scr/smoke_tests.exe
+scr/bench_tests
+scr/bench_tests.exe
+scr/Stepbot.scr
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Self-play / tuning output
+Self_play/*.pgn
+Self_play/elo_history.json
+Self_play/tuned_weights.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

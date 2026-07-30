@@ -16,21 +16,21 @@ set /p choice="Enter choice (1-4): "
 cd /d "%~dp0.."
 
 if "%choice%"=="1" (
-    python selfplay.py --games 2 --depth 2
+    python python\selfplay.py --games 2 --depth 2
     goto end
 )
 if "%choice%"=="2" (
-    python selfplay.py --games 10 --depth 3
+    python python\selfplay.py --games 10 --depth 3
     goto end
 )
 if "%choice%"=="3" (
-    python selfplay.py --games 10 --depth 4
+    python python\selfplay.py --games 10 --depth 4
     goto end
 )
 if "%choice%"=="4" (
     set /p games="Number of games: "
     set /p depth="Depth: "
-    python selfplay.py --games !games! --depth !depth!
+    python python\selfplay.py --games !games! --depth !depth!
     goto end
 )
 

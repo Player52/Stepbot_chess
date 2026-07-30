@@ -16,15 +16,17 @@ import time
 import json
 import tempfile
 
-SCRIPT_DIR    = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(SCRIPT_DIR)
+sys.path.insert(0, os.path.join(ROOT, 'python'))
+
+from paths import TRAINING_DATA, engine_path
+
 WORKER_SCRIPT = os.path.join(SCRIPT_DIR, 'worker_game.py')
-OUTPUT_DIR    = os.path.join(SCRIPT_DIR, 'Training_Data')
+OUTPUT_DIR    = TRAINING_DATA
 OUTPUT_FILE   = os.path.join(OUTPUT_DIR, 'positions.csv')
 STATS_FILE    = os.path.join(OUTPUT_DIR, 'stats.json')
-
-ENGINE_PATH  = os.path.join(SCRIPT_DIR, 'stepbot.exe')
-if not os.path.exists(ENGINE_PATH):
-    ENGINE_PATH = os.path.join(SCRIPT_DIR, 'stepbot')
+ENGINE_PATH   = engine_path()
 
 VALID_MODES = ('stepbot_vs_stepbot', 'stepbot_vs_custom', 'custom_vs_custom')
 

@@ -21,6 +21,7 @@ import copy
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from paths import SELF_PLAY
 from board import (
     WHITE, BLACK, EMPTY,
     PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING,
@@ -44,9 +45,8 @@ from evaluate import (
 )
 from analyse import parse_pgn, extract_moves_from_movetext, san_to_move
 
-SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_INPUT  = os.path.join(SCRIPT_DIR, 'Self_play', 'selfplay_games.pgn')
-DEFAULT_OUTPUT = os.path.join(SCRIPT_DIR, 'tuned_weights.json')
+DEFAULT_INPUT  = os.path.join(SELF_PLAY, 'selfplay_games.pgn')
+DEFAULT_OUTPUT = os.path.join(SELF_PLAY, 'tuned_weights.json')
 
 STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 

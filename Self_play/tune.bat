@@ -16,21 +16,21 @@ set /p choice="Enter choice (1-4): "
 cd /d "%~dp0.."
 
 if "%choice%"=="1" (
-    python tune.py --iterations 100
+    python python\tune.py --iterations 100
     goto end
 )
 if "%choice%"=="2" (
-    python tune.py --iterations 200
+    python python\tune.py --iterations 200
     goto end
 )
 if "%choice%"=="3" (
-    python tune.py --iterations 500
+    python python\tune.py --iterations 500
     goto end
 )
 if "%choice%"=="4" (
     set /p iters="Iterations: "
     set /p maxpos="Max positions (default 5000): "
-    python tune.py --iterations !iters! --max-positions !maxpos!
+    python python\tune.py --iterations !iters! --max-positions !maxpos!
     goto end
 )
 

@@ -48,7 +48,7 @@ make
 Run the engine manually and verify it works with UCI:
 
 ```bash
-./stepbot
+./scr/stepbot
 uci
 isready
 position startpos
@@ -58,7 +58,7 @@ go depth 6
 If you've changed evaluation or search, consider running a quick self-play test:
 
 ```bash
-python selfplay.py --games 5 --depth 4
+python python/selfplay.py --games 5 --depth 4
 ```
 
 ### 5. Open a pull request
@@ -71,18 +71,20 @@ python selfplay.py --games 5 --depth 4
 
 ## Project Structure
 
-| File | Purpose |
+| Path | Purpose |
 |------|---------|
-| `board.h / board.cpp` | Board representation |
-| `movegen.h / movegen.cpp` | Legal move generation |
-| `evaluate.h / evaluate.cpp` | Position evaluation |
-| `search.h / search.cpp` | Alpha-beta search |
-| `zobrist.h / zobrist.cpp` | Zobrist hashing |
-| `main.cpp` | UCI protocol interface |
-| `Makefile` | Build system |
-| `selfplay.py` | Self-play and ELO tracking |
-| `analyse.py` | Game analysis and blunder detection |
-| `tune.py` | Texel tuning |
+| `scr/board.*` | Board representation (C++) |
+| `scr/movegen.*` | Legal move generation (C++) |
+| `scr/evaluate.*` | Position evaluation (C++) |
+| `scr/search.*` | Alpha-beta search (C++) |
+| `scr/zobrist.*` | Zobrist hashing (C++) |
+| `scr/main.cpp` | UCI protocol interface (C++) |
+| `scr/Makefile` | C++ build system |
+| `python/` | Legacy Python engine and training tools |
+| `python/selfplay.py` | Self-play and ELO tracking |
+| `python/analyse.py` | Game analysis and blunder detection |
+| `python/tune.py` | Texel tuning |
+| `training/` | NNUE training data generation |
 
 ---
 
