@@ -54,6 +54,34 @@ static inline bool slot_has_eval(const TTSlot& slot) {
     return (slot.flags & TT_SLOT_HAS_EVAL) != 0;
 }
 
+// ── Tiered eval: cheap stand-pat ──
+// Quiescence stand-pat uses the incremental material+PST+tempo evaluator.
+// Interior nodes keep the full score_from_perspective()/evaluate() path.
+static inline int cheap_stand_pat(const Board& board) {
+    int score = evaluate_cheap(board);
+    return (board.turn == WHITE) ? score : -score;
+}
+
+// ── Capture ordering score: MVV-LVA + capture history ──
+// Replaces SEE in move ordering. SEE is now reserved for the spots where a
+// search DECISION depends on it (bad-capture pruning, probcut, qsearch
+// filter); ordering rides the cheap static heuristic plus the learned table.
+//   victim*16 dominates  -> take the biggest prize first
+//   -attacker            -> LVA: cheapest attacker first among equal victims
+//   cap_hist/100         -> learned refinement within a victim class
+//   +800 promotion       -> queen/under promotions sort with big captures
+static inline int capture_order_score(const int (&cap_hist)[7][64][7],
+                                      const Board& board, const Move& move) {
+    int mover_t  = std::abs(board.get_piece(move.from_sq));
+    int target   = board.get_piece(move.to_sq);
+    int victim_t = (target != EMPTY) ? std::abs(target) : PAWN;  // EP takes a pawn
+    int hist     = (mover_t >= 1 && mover_t <= 6 && victim_t >= 1 && victim_t <= 6)
+                 ? cap_hist[mover_t][move.to_sq][victim_t] : 0;
+    int score = PIECE_VALUES[victim_t] * 16 - PIECE_VALUES[mover_t] + hist / 100;
+    if (move.promotion != 0) score += 800;
+    return score;
+}
+
 static inline int16_t eval_to_tt(int eval) {
     return (int16_t)std::clamp(eval, -32000, 32000);
 }
@@ -218,6 +246,14 @@ Move Searcher::find_best_move(const Board& board, int max_depth,
     if (shared_tt) tt = shared_tt;
     stop_flag = stop;
     output_mutex = output_lock;
+
+    // Reset the shared stop flag at entry. Previous searches set it to true
+    // on exit (to signal helpers to stop), so without this reset a direct
+    // API caller that reuses the same flag would get an instantly-aborted
+    // search. Clearing it here makes find_best_move self-contained; the
+    // UCI path (main.cpp resets it before launching helpers) is unaffected.
+    if (stop_flag) stop_flag->store(false, std::memory_order_relaxed);
+
     multipv = std::max(1, std::min(5, multipv));
     position_history = history;
     nodes_searched = 0;
@@ -330,7 +366,7 @@ Move Searcher::find_best_move(const Board& board, int max_depth,
 std::pair<Move, int> Searcher::search_root(Board& board,
                                             Hash hash, int depth) {
     MoveList moves;
-    generate_legal_moves_into(board, moves);
+    generate_legal_moves_into_new(board, moves);
     if (moves.empty()) return {Move(0, 0), 0};
 
     pv_length[0] = 0;
@@ -404,7 +440,7 @@ std::vector<RootLine> Searcher::search_root_multipv(Board& board,
                                                      Hash hash, int depth,
                                                      int multipv) {
     MoveList moves;
-    generate_legal_moves_into(board, moves);
+    generate_legal_moves_into_new(board, moves);
     if (moves.empty()) return {};
 
     Move root_order_move_storage(0, 0);
@@ -564,7 +600,7 @@ int Searcher::alphabeta(Board& board, Hash hash,
     }
 
     MoveList moves;
-    generate_legal_moves_into(board, moves);
+    generate_legal_moves_into_new(board, moves);
 
     if (moves.empty()) {
         if (king_in_check(board, board.turn))
@@ -726,7 +762,23 @@ int Searcher::alphabeta(Board& board, Hash hash,
         bool is_capture  = !board.is_empty(move.to_sq)
                            || move.to_sq == board.en_passant_sq;
         bool is_promo    = (move.promotion != 0);
-        int  capture_see = is_capture ? static_exchange_eval(board, move) : 0;
+
+        // ── Lazy SEE ──
+        // The only consumer of capture_see in this loop is bad-capture
+        // pruning, gated on the conditions below. So SEE is computed once
+        // per capture — and only when those gates can actually fire.
+        // Move ordering no longer calls SEE, so no capture is ever evaluated
+        // by SEE twice at this node.
+        int  capture_see = 0;
+        if (is_capture && !is_promo
+            && !in_check
+            && depth <= BAD_CAPTURE_PRUNE_DEPTH
+            && move_idx > 0
+            && !node_tt_pv
+            && !window_has_mate_bounds(alpha, beta))
+        {
+            capture_see = static_exchange_eval(board, move);
+        }
 
         // ── Late Move Pruning (LMP) ──
         bool skip_quiets = false;
@@ -968,7 +1020,7 @@ int Searcher::quiescence(Board& board, Hash hash, int alpha, int beta,
 
     int stand_pat = 0;
     if (qcheck_depth >= QS_MAX_PLY && !in_check) {
-        stand_pat = score_from_perspective(board);
+        stand_pat = cheap_stand_pat(board);
         if (stand_pat >= beta) return beta;
         return std::max(alpha, stand_pat);
     }
@@ -976,7 +1028,7 @@ int Searcher::quiescence(Board& board, Hash hash, int alpha, int beta,
         return alpha;
 
     if (ply >= MAX_DEPTH - 1 && !in_check) {
-        stand_pat = score_from_perspective(board);
+        stand_pat = cheap_stand_pat(board);
         if (stand_pat >= beta) return beta;
         return std::max(alpha, stand_pat);
     }
@@ -984,7 +1036,9 @@ int Searcher::quiescence(Board& board, Hash hash, int alpha, int beta,
         return alpha;
 
     if (!in_check) {
-        stand_pat = score_from_perspective(board);
+        // Tiered eval: stand-pat is the one qsearch consumer of the cheap
+        // (incremental material+PST+tempo) evaluator.
+        stand_pat = cheap_stand_pat(board);
         if (stand_pat >= beta) return beta;
         alpha = std::max(alpha, stand_pat);
 
@@ -997,7 +1051,7 @@ int Searcher::quiescence(Board& board, Hash hash, int alpha, int beta,
 
     if (in_check) {
         MoveList moves;
-        generate_legal_moves_into(board, moves);
+        generate_legal_moves_into_new(board, moves);
         order_moves(board, moves, 0);
         if (moves.empty())
             return -(CHECKMATE_SCORE - ply);
@@ -1018,7 +1072,7 @@ int Searcher::quiescence(Board& board, Hash hash, int alpha, int beta,
     }
 
     struct Tactical {
-        int  see_score;
+        int  order_score;   // MVV-LVA + capture history — ordering key only
         Move m;
         bool is_capture;
     };
@@ -1052,8 +1106,11 @@ int Searcher::quiescence(Board& board, Hash hash, int alpha, int beta,
         if (!legal) continue;
 
         if (capture || quiet_queen_promo) {
-            int see = static_exchange_eval(board, m);
-            tactical.push_back({see, m, capture});
+            // Order by MVV-LVA + capture history — no SEE here. The
+            // bad-capture filter in the loop below computes SEE lazily,
+            // once, and only for captures that survive to be searched.
+            tactical.push_back({capture_order_score(capture_history, board, m),
+                                m, capture});
         } else if (gives_check) {
             quiet_checks.push_back(m);
         }
@@ -1061,14 +1118,18 @@ int Searcher::quiescence(Board& board, Hash hash, int alpha, int beta,
 
     std::sort(tactical.begin(), tactical.end(),
               [](const Tactical& a, const Tactical& b) {
-                  return a.see_score > b.see_score;
+                  return a.order_score > b.order_score;
               });
 
     for (const Tactical& t : tactical) {
         if (time_up()) break;
-        if (t.is_capture && t.see_score < 0 &&
-            stand_pat + t.see_score <= alpha)
-            continue;
+        if (t.is_capture) {
+            // qsearch filter — the one SEE decision left in qsearch.
+            // Computed once per capture, on demand.
+            int see = static_exchange_eval(board, t.m);
+            if (see < 0 && stand_pat + see <= alpha)
+                continue;
+        }
 
         UndoInfo undo    = make_move(board, t.m);
         Hash     new_hash = update_hash(hash, board, t.m,
@@ -1130,18 +1191,13 @@ void Searcher::order_moves(const Board& board,
         if (tt_move && move == *tt_move) {
             score = 2000000;
         } else {
-            if (target != EMPTY) {
-                int see      = static_exchange_eval(board, move);
-                int mover_t  = std::abs(board.get_piece(move.from_sq));
-                int target_t = std::abs(target);
-                int cap_hist = (mover_t >= 1 && mover_t <= 6
-                                && target_t >= 1 && target_t <= 6)
-                             ? capture_history[mover_t][move.to_sq][target_t]
-                             : 0;
-                score = 100000 + see + cap_hist / 100;
-            } else if (move.to_sq == board.en_passant_sq) {
-                int see = static_exchange_eval(board, move);
-                score = 100000 + see;
+            if (target != EMPTY || move.to_sq == board.en_passant_sq) {
+                // Captures & EP: MVV-LVA + capture history. SEE was removed
+                // from ordering — it is computed once, lazily, only where a
+                // pruning decision needs it (see the alphabeta move loop,
+                // probcut, and the qsearch filter).
+                score = 100000
+                      + capture_order_score(capture_history, board, move);
             } else if (ply < MAX_DEPTH) {
                 if (killer_count[ply] > 0 && move == killers[ply][0])
                     score = 9000;
@@ -1295,7 +1351,7 @@ bool Searcher::is_singular(const Board& board, Hash hash,
     int s_depth  = std::max(1, depth / 2);
 
     MoveList moves;
-    generate_legal_moves_into(board, moves);
+    generate_legal_moves_into_new(board, moves);
 
     // is_singular is called with the board in the pre-move state
     // (we unmake before calling it, then re-make after).

@@ -166,6 +166,43 @@ static void test_movelist_matches_vector_wrapper() {
     }
 }
 
+static void test_direct_movegen_rejects_en_passant_discovered_check() {
+    Board board = board_from_fen_for_test(
+        "8/6bb/8/8/R1pP2k1/4P3/P7/K7 b - d3 0 1"
+    );
+
+    MoveList original_moves;
+    MoveList direct_moves;
+    generate_legal_moves_into(board, original_moves);
+    generate_legal_moves_into_new(board, direct_moves);
+
+    require(original_moves.size() == direct_moves.size(),
+            "direct legal generation matches original count for en passant pin");
+
+    for (const Move& move : direct_moves) {
+        require(contains_move(original_moves.to_vector(), move.to_uci()),
+                "direct legal generation rejects illegal en passant discovered check");
+    }
+}
+
+static void test_kings_cannot_move_onto_pawn_attacks() {
+    Board white_king = board_from_fen_for_test(
+        "8/8/8/3p4/8/4K3/8/8 w - - 0 1"
+    );
+    require(square_attacked_by(white_king, name_to_square("e4"), BLACK),
+            "black pawn on d5 attacks e4");
+    require(!contains_move(generate_legal_moves(white_king), "e3e4"),
+            "white king cannot move onto a black pawn attack");
+
+    Board black_king = board_from_fen_for_test(
+        "8/8/4k3/8/3P4/8/8/8 b - - 0 1"
+    );
+    require(square_attacked_by(black_king, name_to_square("e5"), WHITE),
+            "white pawn on d4 attacks e5");
+    require(!contains_move(generate_legal_moves(black_king), "e6e5"),
+            "black king cannot move onto a white pawn attack");
+}
+
 static void test_king_square_tracking_make_unmake() {
     Board board = empty_board();
     board.set_piece(4, WHITE * KING);
@@ -204,7 +241,8 @@ static void test_reported_fen_king_move_legality() {
     );
 
     auto moves = generate_legal_moves(board);
-    require(contains_move(moves, "g1f2"), "reported FEN allows Kg1-f2");
+    require(!contains_move(moves, "g1f2"),
+            "reported FEN rejects Kg1-f2 onto black pawn attack");
     require(contains_move(moves, "e2e1"), "reported FEN allows Re2-e1");
     require(!contains_move(moves, "g1f1"), "reported FEN rejects illegal Kg1-f1");
 }
@@ -398,6 +436,8 @@ int main() {
     test_start_position_move_count();
     test_start_position_perft_depth_2();
     test_movelist_matches_vector_wrapper();
+    test_direct_movegen_rejects_en_passant_discovered_check();
+    test_kings_cannot_move_onto_pawn_attacks();
     test_king_square_tracking_make_unmake();
     test_rook_capture_clears_castling_rights();
     test_missing_king_is_invalid();

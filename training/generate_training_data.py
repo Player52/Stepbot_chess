@@ -1,10 +1,10 @@
 # generate_training_data.py
 # Generates NNUE training positions by running Stepbot self-play.
-# Each worker is a separate process running worker_game.py.
+# Output: binary .bin format (see nnue_bin.py) — 40 bytes per position.
 #
 # Usage:
 #   python generate_training_data.py
-#   python generate_training_data.py --games 1000 --depth 9 --cores 5
+#   python generate_training_data.py --games 1000 --depth 6 --cores 4
 #   python generate_training_data.py --append
 #   python generate_training_data.py --debug   (single worker, full UCI log)
 
@@ -14,21 +14,36 @@ import sys
 import argparse
 import time
 import json
+import hashlib
 import tempfile
+import threading
+import queue
+from collections import defaultdict
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SCRIPT_DIR)
 sys.path.insert(0, os.path.join(ROOT, 'python'))
+sys.path.insert(0, SCRIPT_DIR)
 
 from paths import TRAINING_DATA, engine_path
+from nnue_bin import MAGIC, VERSION, HEADER, RECORD_SIZE, read_records
 
 WORKER_SCRIPT = os.path.join(SCRIPT_DIR, 'worker_game.py')
 OUTPUT_DIR    = TRAINING_DATA
-OUTPUT_FILE   = os.path.join(OUTPUT_DIR, 'positions.csv')
+OUTPUT_FILE   = os.path.join(OUTPUT_DIR, 'positions.bin')
 STATS_FILE    = os.path.join(OUTPUT_DIR, 'stats.json')
 ENGINE_PATH   = engine_path()
 
 VALID_MODES = ('stepbot_vs_stepbot', 'stepbot_vs_custom', 'custom_vs_custom')
+
+
+def engine_id(path):
+    """Short content hash of the engine binary — dataset provenance stamp."""
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()[:12]
 
 
 # ─────────────────────────────────────────
@@ -63,6 +78,9 @@ def test_engine(engine_path, depth):
         send('uci')
         if not wait('uciok'):
             return False, 'No uciok'
+        # Book OFF — otherwise the probe move comes from the book with no
+        # score line, and the test fails to parse a score (score=Nonecp).
+        send('setoption name UseBook value false')
         send('isready')
         if not wait('readyok'):
             return False, 'No readyok'
@@ -102,39 +120,35 @@ def test_engine(engine_path, depth):
 
 
 # ─────────────────────────────────────────
-# DEDUPLICATION
+# DEDUPLICATION / SAVE (binary)
 # ─────────────────────────────────────────
 
-def deduplicate(positions):
+def deduplicate(records):
+    # Key = board + stm + castling + ep (first 35 bytes) — exactly the old
+    # ' '.join(fen.split()[:4]) semantics.
     seen   = set()
     unique = []
-    for fen, score in positions:
-        key = ' '.join(fen.split()[:4])
+    for r in records:
+        key = r[:35]
         if key not in seen:
             seen.add(key)
-            unique.append((fen, score))
+            unique.append(r)
     return unique
 
 
-# ─────────────────────────────────────────
-# SAVE
-# ─────────────────────────────────────────
-
-def save_positions(positions, path, append=False):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    mode = 'a' if append else 'w'
-    with open(path, mode, encoding='utf-8') as f:
-        if not append:
-            f.write('fen,score_cp\n')
-        for fen, score in positions:
-            f.write(f'"{fen}",{score}\n')
+def save_positions(records, path, append=False):
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    existing = read_records(path) if (append and os.path.exists(path)) else []
+    with open(path, 'wb') as f:
+        f.write(HEADER.pack(MAGIC, VERSION, 0, len(existing) + len(records)))
+        f.write(b''.join(existing))
+        f.write(b''.join(records))
 
 
 def count_existing(path):
     if not os.path.exists(path):
         return 0
-    with open(path, 'r') as f:
-        return max(0, sum(1 for _ in f) - 1)
+    return max(0, (os.path.getsize(path) - HEADER.size) // RECORD_SIZE)
 
 
 # ─────────────────────────────────────────
@@ -142,7 +156,8 @@ def count_existing(path):
 # ─────────────────────────────────────────
 
 def run(total_games, depth, num_cores, output_file, append, engine2, mode, debug):
-    # In debug mode: force single worker and single game so output is readable
+    prof_times = defaultdict(float)
+
     if debug:
         num_cores   = 1
         total_games = 1
@@ -155,14 +170,14 @@ def run(total_games, depth, num_cores, output_file, append, engine2, mode, debug
         print('  Stepbot NNUE Training Data Generator')
         print('=' * 60)
 
-    print(f'  Engine  : {ENGINE_PATH}')
+    print(f'  Engine  : {ENGINE_PATH} (id {engine_id(ENGINE_PATH)})')
     if engine2:
         print(f'  Engine2 : {engine2}')
     print(f'  Mode    : {mode}')
     print(f'  Games   : {total_games}')
     print(f'  Depth   : {depth}')
     print(f'  Cores   : {num_cores}')
-    print(f'  Output  : {output_file}')
+    print(f'  Output  : {output_file} (binary v{VERSION}, {RECORD_SIZE}B/pos)')
     print()
 
     if not os.path.exists(ENGINE_PATH):
@@ -182,7 +197,7 @@ def run(total_games, depth, num_cores, output_file, append, engine2, mode, debug
             print(f'  ERROR: --engine2 is required for mode "{mode}"')
             sys.exit(1)
         if not os.path.exists(engine2):
-            print(f'  ERROR: Custom engine not found at "{engine2}"')
+            print(f'  ERROR: Custom engine not found at {engine2}')
             sys.exit(1)
 
     if not debug:
@@ -200,19 +215,16 @@ def run(total_games, depth, num_cores, output_file, append, engine2, mode, debug
     else:
         append = False
 
-    # Distribute games across workers
     base       = total_games // num_cores
     remainder  = total_games % num_cores
     games_each = [base + (1 if i < remainder else 0) for i in range(num_cores)]
 
-    # Temp output file per worker
     tmp_files = []
     for i in range(num_cores):
-        fd, path = tempfile.mkstemp(suffix=f'_w{i}.txt')
+        fd, path = tempfile.mkstemp(suffix=f'_w{i}.bin')
         os.close(fd)
         tmp_files.append(path)
 
-    # Launch workers
     procs = []
     for i in range(num_cores):
         cmd = [
@@ -226,7 +238,6 @@ def run(total_games, depth, num_cores, output_file, append, engine2, mode, debug
             mode,
             '1' if debug else '0',
         ]
-        # In debug mode: let stderr flow directly to terminal so logs are visible
         stderr_dest = None if debug else subprocess.PIPE
         p = subprocess.Popen(
             cmd,
@@ -241,7 +252,6 @@ def run(total_games, depth, num_cores, output_file, append, engine2, mode, debug
     if debug:
         print('  Worker launched — UCI log:')
         print('-' * 60)
-        # In debug mode: run single worker synchronously so output streams live
         p = procs[0]
         while True:
             line = p.stdout.readline()
@@ -252,6 +262,17 @@ def run(total_games, depth, num_cores, output_file, append, engine2, mode, debug
             line = line.strip()
             if line.startswith('PROGRESS'):
                 print(f'\n  [PROGRESS] {line}')
+            elif line.startswith('TIMING'):
+                parts = line.split()
+                if len(parts) >= 3:
+                    prof_times[parts[1]] += float(parts[2])
+                print(f'\n  [TIMING] {line}')
+            elif line.startswith('METRIC'):
+                parts = line.split()
+                if len(parts) >= 3:
+                    key = f'metric_{parts[1]}'
+                    prof_times[key] = prof_times.get(key, 0) + int(parts[2])
+                print(f'\n  [METRIC] {line}')
             elif line.startswith('DONE'):
                 print(f'\n  [DONE] {line}')
             else:
@@ -261,38 +282,74 @@ def run(total_games, depth, num_cores, output_file, append, engine2, mode, debug
         print(f'  {num_cores} worker(s) launched.')
         print()
 
-        # Monitor progress
-        start_time   = time.time()
-        game_counts  = [0] * num_cores
-        done         = [False] * num_cores
+        start_time  = time.time()
+        game_counts = [0] * num_cores
+        done        = [False] * num_cores
+
+        # ------------------------------------------------------------------
+        # Concurrent stdout reader.
+        #
+        # The old code called p.stdout.readline() inside a for-loop over
+        # workers. readline() BLOCKS, so if worker 0 was mid-game (no
+        # output) the parent froze on it and never drained workers 1..N —
+        # which then blocked on their own stdout writes. Result: deadlock
+        # and the script "sat there indefinitely" after launching workers.
+        #
+        # Fix: one daemon thread per worker pushes lines into a shared
+        # queue. The main loop pulls with a short timeout so it services
+        # every worker and never blocks on a single pipe.
+        # ------------------------------------------------------------------
+        line_queue = queue.Queue()
+
+        def worker_reader(proc, idx):
+            try:
+                for line in proc.stdout:
+                    line_queue.put((idx, line.rstrip('\n')))
+            except Exception:
+                pass
+            line_queue.put((idx, None))  # sentinel: stdout closed
+
+        for i, p in enumerate(procs):
+            t = threading.Thread(target=worker_reader, args=(p, i), daemon=True)
+            t.start()
 
         while not all(done):
-            for i, p in enumerate(procs):
-                if done[i]:
-                    continue
-                line = p.stdout.readline()
-                if not line:
-                    if p.poll() is not None:
-                        done[i] = True
-                    continue
-                line = line.strip()
-                if line.startswith('PROGRESS'):
-                    parts = line.split()
-                    game_counts[i] = int(parts[1])
-                    total_done = sum(game_counts)
-                    elapsed    = time.time() - start_time
-                    rate       = (total_done / elapsed * 60) if elapsed > 0 else 0
-                    remaining  = total_games - total_done
-                    eta        = (remaining / (rate / 60)) if rate > 0 else 0
-                    print(f'\r  Games: {total_done}/{total_games} '
-                          f'| Core {i}: {parts[1]}/{games_each[i]} '
-                          f'| {rate:.1f} games/min '
-                          f'| ETA: {eta:.0f}s    ',
-                          end='', flush=True)
-                elif line.startswith('DONE'):
-                    done[i] = True
+            try:
+                idx, line = line_queue.get(timeout=0.5)
+            except queue.Empty:
+                # No worker output in the last 0.5s — loop and re-check.
+                continue
 
-            time.sleep(0.02)
+            if line is None:
+                # Worker's stdout closed (it finished or crashed).
+                done[idx] = True
+                continue
+
+            if line.startswith('PROGRESS'):
+                parts = line.split()
+                if len(parts) >= 2:
+                    game_counts[idx] = int(parts[1])
+                total_done = sum(game_counts)
+                elapsed    = time.time() - start_time
+                rate       = (total_done / elapsed * 60) if elapsed > 0 else 0
+                remaining  = total_games - total_done
+                eta        = (remaining / (rate / 60)) if rate > 0 else 0
+                print(f'\r  Games: {total_done}/{total_games} '
+                      f'| Core {idx}: {game_counts[idx]}/{games_each[idx]} '
+                      f'| {rate:.1f} games/min '
+                      f'| ETA: {eta:.0f}s    ',
+                      end='', flush=True)
+            elif line.startswith('TIMING'):
+                parts = line.split()
+                if len(parts) >= 3:
+                    prof_times[parts[1]] += float(parts[2])
+            elif line.startswith('METRIC'):
+                parts = line.split()
+                if len(parts) >= 3:
+                    key = f'metric_{parts[1]}'
+                    prof_times[key] = prof_times.get(key, 0) + int(parts[2])
+            elif line.startswith('DONE'):
+                done[idx] = True
 
         for p in procs:
             try:
@@ -305,36 +362,33 @@ def run(total_games, depth, num_cores, output_file, append, engine2, mode, debug
     if not debug:
         print(f'\n\n  All workers finished in {elapsed:.0f}s.')
 
-        # Check stderr for errors
         for i, p in enumerate(procs):
             err = p.stderr.read() if p.stderr else ''
             if err.strip():
                 print(f'  Core {i} stderr:\n{err[:500]}')
 
-    # Collect results
-    all_positions = []
+    # Collect binary records from workers
+    collect_start  = time.time()
+    all_positions  = []
     for i, tmp_file in enumerate(tmp_files):
-        if os.path.exists(tmp_file):
-            try:
-                with open(tmp_file, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        if '|||' in line:
-                            fen, score_str = line.rsplit('|||', 1)
-                            try:
-                                all_positions.append((fen, int(score_str)))
-                            except ValueError:
-                                pass
-                os.unlink(tmp_file)
-            except Exception as e:
-                print(f'  Warning: could not read worker {i} file: {e}')
+        try:
+            all_positions.extend(read_records(tmp_file))
+            os.unlink(tmp_file)
+        except Exception as e:
+            print(f'  Warning: could not read worker {i} file: {e}')
+    prof_times['file_collection'] += time.time() - collect_start
 
     print(f'  Raw positions : {len(all_positions):,}')
+
+    dedup_start = time.time()
     unique = deduplicate(all_positions)
+    prof_times['deduplication'] += time.time() - dedup_start
     print(f'  After dedup   : {len(unique):,}')
 
     if not debug:
+        save_start = time.time()
         save_positions(unique, output_file, append=append)
+        prof_times['file_writing'] += time.time() - save_start
         total_saved = existing + len(unique)
         print(f'  Total saved   : {total_saved:,}')
 
@@ -346,12 +400,37 @@ def run(total_games, depth, num_cores, output_file, append, engine2, mode, debug
             'cores':                num_cores,
             'mode':                 mode,
             'engine2':              engine2 or 'N/A',
+            'engine_id':            engine_id(ENGINE_PATH),
+            'format':               f'bin-v{VERSION}',
             'elapsed_seconds':      round(elapsed, 1),
             'positions_per_second': round(len(unique) / elapsed, 1) if elapsed > 0 else 0,
         }
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         with open(STATS_FILE, 'w') as f:
             json.dump(stats, f, indent=2)
+
+        # Profiling summary
+        timing_categories = [k for k in prof_times.keys() if not k.startswith('metric_')]
+        total_prof_time = sum(prof_times[k] for k in timing_categories
+                              if isinstance(prof_times[k], float))
+        print()
+        print('-' * 60)
+        print('  PROFILING SUMMARY')
+        print('-' * 60)
+        for cat in ('engine_search', 'game_handling', 'fen_generation',
+                    'file_collection', 'deduplication', 'file_writing'):
+            if cat in prof_times:
+                pct = (prof_times[cat] / total_prof_time * 100) if total_prof_time > 0 else 0
+                print(f'    {cat:30s}: {prof_times[cat]:8.2f}s ({pct:5.1f}%)')
+        if 'metric_nodes_searched' in prof_times or 'metric_nps' in prof_times:
+            print()
+            print('    Engine metrics:')
+            if 'metric_nodes_searched' in prof_times:
+                print(f'      Total nodes searched : {prof_times["metric_nodes_searched"]:>15,}')
+            if 'metric_nps' in prof_times:
+                print(f'      Nodes/second (avg)   : {prof_times["metric_nps"]:>15,}')
+        print(f'    {"Total profiled time":30s}: {total_prof_time:8.2f}s')
+        print('-' * 60)
 
         print()
         print('=' * 60)
@@ -372,7 +451,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description='''
-Stepbot NNUE Training Data Generator
+Stepbot NNUE Training Data Generator (binary output)
 
 Modes:
   stepbot_vs_stepbot  — Stepbot plays both sides (default)
@@ -380,14 +459,14 @@ Modes:
   custom_vs_custom    — Custom engine vs itself; Stepbot evaluates positions
 
 Examples:
-  python generate_training_data.py --games 500 --depth 9
-  python generate_training_data.py --mode stepbot_vs_custom --engine2 path/to/stockfish.exe
-  python generate_training_data.py --mode custom_vs_custom  --engine2 path/to/stockfish.exe --append
-  python generate_training_data.py --debug --mode stepbot_vs_custom --engine2 path/to/stockfish.exe
+  python generate_training_data.py --games 2500 --depth 6 --cores 4
+  python generate_training_data.py --mode stepbot_vs_custom --engine2 path/to/stockfish
+  python generate_training_data.py --append
+  python generate_training_data.py --debug
 ''')
     parser.add_argument('--games',   type=int, default=200)
-    parser.add_argument('--depth',   type=int, default=13)
-    parser.add_argument('--cores',   type=int, default=5)
+    parser.add_argument('--depth',   type=int, default=6)
+    parser.add_argument('--cores',   type=int, default=4)
     parser.add_argument('--output',  default=OUTPUT_FILE)
     parser.add_argument('--append',  action='store_true')
     parser.add_argument('--debug',   action='store_true',

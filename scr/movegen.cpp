@@ -7,6 +7,11 @@
 #include <cstdlib>    // For std::abs
 #include <algorithm>  // For std::copy (used when deep-copying the board)
 
+// A/B Testing: Global flag definition
+// When true, generate_legal_moves_into_ab() uses the optimized implementation
+// When false, it uses the original implementation
+bool USE_NEW_LEGAL_MOVE_GEN = false;
+
 static void clear_rook_castling_right(CastlingRights& rights, int rook_sq) {
     if (rook_sq == 0)  rights.Q = false;
     if (rook_sq == 7)  rights.K = false;
@@ -522,14 +527,13 @@ bool square_attacked_by(const Board& board, int target_sq, int attacker_colour) 
         }
     }
 
-    // Pawn attacks
-    // If attacker is BLACK, black pawns attack downward (directions -9, -7)
-    // If attacker is WHITE, white pawns attack upward (directions 9, 7)
+    // Pawn attacks. These offsets search backward from target_sq to the
+    // possible attacker squares.
     int pawn_dirs[2];
     if (attacker_colour == BLACK) {
-        pawn_dirs[0] = -9; pawn_dirs[1] = -7;
-    } else {
         pawn_dirs[0] =  9; pawn_dirs[1] =  7;
+    } else {
+        pawn_dirs[0] = -9; pawn_dirs[1] = -7;
     }
     for (int direction : pawn_dirs) {
         int sq_idx = target_sq + direction;
@@ -577,6 +581,407 @@ void generate_legal_moves_into(const Board& board, MoveList& legal) {
         unmake_move(test_board, move, undo);
     }
 
+}
+
+// ─────────────────────────────────────────────────────────────
+// DIRECT LEGALITY CHECK APPROACH (Optimization)
+// Uses direct board analysis instead of make/unmake to check move legality
+// ─────────────────────────────────────────────────────────────
+
+// Helper function: get direction from one square to another
+// Returns direction index (0-7 for ALL_DIRS) or -1 if not on a straight line
+// ALL_DIRS = {9, 7, -7, -9, 8, -8, 1, -1}
+static inline int get_direction_index(int from_sq, int to_sq) {
+    int df = file_of(to_sq) - file_of(from_sq);
+    int dr = rank_of(to_sq) - rank_of(from_sq);
+    
+    if (df == 0 && dr == 0) return -1;
+    
+    // Straight directions
+    if (df == 0 && dr > 0) return 4;   // Up (8) -> ALL_DIRS[4]
+    if (df == 0 && dr < 0) return 5;   // Down (-8) -> ALL_DIRS[5]
+    if (dr == 0 && df > 0) return 6;   // Right (1) -> ALL_DIRS[6]
+    if (dr == 0 && df < 0) return 7;   // Left (-1) -> ALL_DIRS[7]
+    
+    // Diagonal directions
+    if (std::abs(df) == std::abs(dr)) {
+        if (df > 0 && dr > 0) return 0;   // Up-Right (9) -> ALL_DIRS[0]
+        if (df > 0 && dr < 0) return 2;   // Down-Right (-7) -> ALL_DIRS[2]
+        if (df < 0 && dr > 0) return 1;   // Up-Left (7) -> ALL_DIRS[1]
+        if (df < 0 && dr < 0) return 3;   // Down-Left (-9) -> ALL_DIRS[3]
+    }
+    
+    return -1;  // Not on a straight line
+}
+
+// Helper function: check if a piece type can slide in a given direction
+// ALL_DIRS = {9, 7, -7, -9, 8, -8, 1, -1}
+// Diagonals: indices 0-3 (9, 7, -7, -9)
+// Straights:  indices 4-7 (8, -8, 1, -1)
+static inline bool can_slide(int piece_type, int direction_index) {
+    if (direction_index == -1) return false;
+    
+    if (piece_type == ROOK) {
+        // Rook: straight directions only (indices 4-7: 8, -8, 1, -1)
+        return direction_index >= 4 && direction_index <= 7;
+    }
+    if (piece_type == BISHOP) {
+        // Bishop: diagonal directions only (indices 0-3: 9, 7, -7, -9)
+        return direction_index >= 0 && direction_index <= 3;
+    }
+    if (piece_type == QUEEN) {
+        // Queen: all sliding directions
+        return direction_index >= 0 && direction_index <= 7;
+    }
+    return false;  // Non-sliding piece
+}
+
+// Check if a piece is pinned to its king
+// A piece is pinned if:
+// 1. It's on a straight line from the king
+// 2. There's an enemy sliding piece beyond it that attacks through it
+// 3. There are no pieces between the king and the pinned piece (except the pinned piece itself)
+//    that would block the attacker's path to the king
+static bool is_pinned(const Board& board, int sq, int colour) {
+    int king_sq = board.king_square(colour);
+    if (sq == king_sq) return false;  // King is never pinned to itself
+    
+    int direction = get_direction_index(king_sq, sq);
+    if (direction == -1) return false;  // Not on a straight line from king
+    
+    // The ALL_DIRS array from board.h
+    static const int all_dirs[] = {9, 7, -7, -9, 8, -8, 1, -1};
+    int dir = all_dirs[direction];
+    
+    // First, check if the path from king to sq is clear (no pieces between king and sq)
+    // If there's a piece between king and sq, then even if there's an attacker beyond sq,
+    // that attacker couldn't see the king through sq (the intermediate piece blocks)
+    int check_sq = king_sq + dir;
+    while (check_sq != sq) {
+        if (check_sq < 0 || check_sq >= 64) break;  // Shouldn't happen if king and sq are on same line
+        
+        if (board.get_piece(check_sq) != EMPTY) {
+            // There's a piece between king and sq, so sq cannot be pinned
+            // (the attacker beyond sq would be blocked by this intermediate piece)
+            return false;
+        }
+        
+        // Check board boundaries - detect if we wrapped
+        int prev_file = file_of(check_sq - dir);
+        int new_file = file_of(check_sq);
+        if (dir == 1 || dir == -1) {
+            if (std::abs(prev_file - new_file) != 1) break;
+        } else if (dir == 9 || dir == -9) {
+            if ((dir == 9 && new_file <= prev_file) || (dir == -9 && new_file >= prev_file)) break;
+        } else if (dir == 7 || dir == -7) {
+            if ((dir == 7 && new_file >= prev_file) || (dir == -7 && new_file <= prev_file)) break;
+        }
+        
+        check_sq += dir;
+        if (check_sq == sq) break;  // Reached the target square
+    }
+    
+    // Now check if there's an enemy sliding piece beyond sq in the same direction
+    // Use proper boundary checking: check before processing each square
+    int search_sq = sq + dir;
+    while (true) {
+        if (search_sq < 0 || search_sq >= 64) break;
+        
+        // Check if the step from previous square wrapped
+        int prev_file = file_of(search_sq - dir);
+        int new_file = file_of(search_sq);
+        if (dir == 1 || dir == -1) {
+            if (std::abs(prev_file - new_file) != 1) break;
+        } else if (dir == 9 || dir == -9) {
+            if ((dir == 9 && new_file <= prev_file) || (dir == -9 && new_file >= prev_file)) break;
+        } else if (dir == 7 || dir == -7) {
+            if ((dir == 7 && new_file >= prev_file) || (dir == -7 && new_file <= prev_file)) break;
+        }
+        
+        // Now process the square
+        int piece_here = board.get_piece(search_sq);
+        if (piece_here != EMPTY) {
+            if (board.colour_at(search_sq) == -colour) {
+                int attacker_type = std::abs(piece_here);
+                // The attacker direction from sq to search_sq should be the same as dir
+                // Since we're moving in dir from sq, search_sq = sq + dir
+                // So the direction from sq to search_sq is dir
+                if (can_slide(attacker_type, direction)) {
+                    return true;  // Piece is pinned
+                }
+            }
+            break;  // Blocked by a piece
+        }
+        
+        search_sq += dir;
+    }
+    
+    return false;
+}
+
+// Check if a pinned piece move is legal
+// A pinned piece can move:
+// 1. Along the pin line (same direction from king)
+// 2. To capture the attacker (if the attacker is on the pin line)
+static bool is_pinned_move_legal(const Board& board, const Move& move, int colour) {
+    int king_sq = board.king_square(colour);
+    int from_sq = move.from_sq;
+    int to_sq = move.to_sq;
+    
+    int from_dir = get_direction_index(king_sq, from_sq);
+    if (from_dir == -1) return true;  // Shouldn't happen for pinned piece
+    
+    int to_dir = get_direction_index(king_sq, to_sq);
+    
+    // Must stay on the same line (same direction from king)
+    if (from_dir != to_dir) {
+        // Unless capturing the attacker - check if destination is the attacker
+        int captured = board.get_piece(to_sq);
+        if (captured != EMPTY && board.colour_at(to_sq) == -colour) {
+            // Check if this piece is the attacker causing the pin
+            static const int all_dirs[] = {9, 7, -7, -9, 8, -8, 1, -1};
+            int dir = all_dirs[from_dir];
+            
+            int search_sq = from_sq + dir;
+            while (search_sq >= 0 && search_sq < 64) {
+                int piece_here = board.get_piece(search_sq);
+                if (piece_here != EMPTY) {
+                    if (search_sq == to_sq) {
+                        int attacker_type = std::abs(piece_here);
+                        int attacker_dir = get_direction_index(from_sq, search_sq);
+                        if (can_slide(attacker_type, attacker_dir)) {
+                            return true;  // Capturing the attacker - legal
+                        }
+                    }
+                    break;  // Blocked by a piece
+                }
+                
+                // Check board boundaries
+                int prev_file = file_of(search_sq - dir);
+                int new_file = file_of(search_sq);
+                if (dir == 1 || dir == -1) {
+                    if (std::abs(prev_file - new_file) != 1) break;
+                } else if (dir == 9 || dir == -9) {
+                    if ((dir == 9 && new_file <= prev_file) || (dir == -9 && new_file >= prev_file)) break;
+                } else if (dir == 7 || dir == -7) {
+                    if ((dir == 7 && new_file >= prev_file) || (dir == -7 && new_file <= prev_file)) break;
+                }
+                
+                search_sq += dir;
+            }
+        }
+        return false;  // Moves off the pin line without capturing attacker
+    }
+    
+    return true;  // Stays on pin line
+}
+
+// Check if moving a piece reveals a discovered check
+// This happens when:
+// 1. The piece being moved is a sliding piece
+// 2. There's an enemy sliding piece behind it (relative to king)
+// 3. That enemy piece would attack the king if the moving piece moves away
+// 4. There are no pieces between the king and the moving piece
+static bool move_reveals_discovered_check(const Board& board, const Move& move, int colour) {
+    int piece = board.get_piece(move.from_sq);
+    int piece_type = std::abs(piece);
+    
+    // Only sliding pieces can reveal discovered checks
+    if (piece_type != ROOK && piece_type != BISHOP && piece_type != QUEEN) {
+        return false;
+    }
+    
+    int king_sq = board.king_square(colour);
+    int from_sq = move.from_sq;
+    
+    int king_to_piece_dir = get_direction_index(king_sq, from_sq);
+    if (king_to_piece_dir == -1) return false;  // Piece not on straight line from king
+    
+    // The ALL_DIRS array from board.h
+    static const int all_dirs[] = {9, 7, -7, -9, 8, -8, 1, -1};
+    int dir = all_dirs[king_to_piece_dir];
+    
+    // First, check if the path from king to from_sq is clear (no pieces between king and moving piece)
+    // If there's a piece between king and from_sq, then moving from_sq won't reveal an attack
+    // because that intermediate piece still blocks
+    int check_sq = king_sq + dir;
+    while (check_sq != from_sq) {
+        if (check_sq < 0 || check_sq >= 64) break;
+        
+        if (board.get_piece(check_sq) != EMPTY) {
+            // There's a piece between king and from_sq, so moving from_sq won't reveal discovered check
+            return false;
+        }
+        
+        // Check board boundaries
+        int prev_file = file_of(check_sq - dir);
+        int new_file = file_of(check_sq);
+        if (dir == 1 || dir == -1) {
+            if (std::abs(prev_file - new_file) != 1) break;
+        } else if (dir == 9 || dir == -9) {
+            if ((dir == 9 && new_file <= prev_file) || (dir == -9 && new_file >= prev_file)) break;
+        } else if (dir == 7 || dir == -7) {
+            if ((dir == 7 && new_file >= prev_file) || (dir == -7 && new_file <= prev_file)) break;
+        }
+        
+        check_sq += dir;
+        if (check_sq == from_sq) break;
+    }
+    
+    // The piece is between king and some squares - check behind the piece
+    // (away from the king)
+    // Use proper boundary checking: check before processing each square
+    int search_sq = from_sq + dir;  // Start looking behind the piece (away from king)
+    while (true) {
+        if (search_sq < 0 || search_sq >= 64) break;
+        
+        // Check if the step from previous square wrapped
+        int prev_file = file_of(search_sq - dir);
+        int new_file = file_of(search_sq);
+        if (dir == 1 || dir == -1) {
+            if (std::abs(prev_file - new_file) != 1) break;
+        } else if (dir == 9 || dir == -9) {
+            if ((dir == 9 && new_file <= prev_file) || (dir == -9 && new_file >= prev_file)) break;
+        } else if (dir == 7 || dir == -7) {
+            if ((dir == 7 && new_file >= prev_file) || (dir == -7 && new_file <= prev_file)) break;
+        }
+        
+        // Now process the square
+        int piece_here = board.get_piece(search_sq);
+        if (piece_here != EMPTY) {
+            if (board.colour_at(search_sq) == -colour) {
+                int attacker_type = std::abs(piece_here);
+                // Check if attacker can slide along the line (using king_to_piece_dir)
+                if (can_slide(attacker_type, king_to_piece_dir)) {
+                    // Found an attacker that was blocked by the moving piece
+                    // The move reveals discovered check unless it captures this attacker
+                    if (move.to_sq != search_sq) {
+                        return true;  // Reveals discovered check
+                    }
+                    // Capturing the attacker - this is fine, not a discovered check
+                    return false;
+                }
+            }
+            break;  // Blocked by another piece
+        }
+        
+        search_sq += dir;
+    }
+    
+    return false;
+}
+
+// Check if a king move is legal (for Direct Legality Check)
+// Handles regular king moves and castling
+static bool is_king_move_legal(const Board& board, const Move& move, int colour) {
+    int from_sq = move.from_sq;
+    int to_sq = move.to_sq;
+    int enemy = -colour;
+    
+    // Check if it's castling (king moves 2 squares)
+    if (std::abs(to_sq - from_sq) == 2) {
+        // For castling, we need to check:
+        // 1. King doesn't move through check
+        // 2. King doesn't end in check
+        // 3. The intermediate square is not attacked
+        
+        int step = (to_sq > from_sq) ? 1 : -1;
+        int king_step1 = from_sq + step;
+        
+        // Check if king moves through or into check
+        if (square_attacked_by(board, king_step1, enemy)) return false;
+        if (square_attacked_by(board, to_sq, enemy)) return false;
+        
+        return true;
+    }
+    
+    // Regular king move: destination must not be attacked
+    return !square_attacked_by(board, to_sq, enemy);
+}
+
+// Main legality check without make/unmake
+// Returns true if the pseudo-legal move is actually legal
+// This is only used when the king is NOT currently in check
+static bool is_move_legal_no_make(const Board& board, const Move& move, int colour) {
+    int piece = board.get_piece(move.from_sq);
+    if (piece == EMPTY) return false;
+    
+    int piece_type = std::abs(piece);
+    int from_sq = move.from_sq;
+
+    if (piece_type == PAWN && move.to_sq == board.en_passant_sq) {
+        Board test_board = board;
+        UndoInfo undo = make_move(test_board, move);
+        bool legal = !king_in_check(test_board, colour);
+        unmake_move(test_board, move, undo);
+        return legal;
+    }
+    
+    // King move
+    if (piece_type == KING) {
+        return is_king_move_legal(board, move, colour);
+    }
+    
+    // Not in check - check for normal legality issues
+    // Check if piece is pinned
+    if (is_pinned(board, from_sq, colour)) {
+        return is_pinned_move_legal(board, move, colour);
+    }
+    
+    // Check if move reveals discovered check
+    if (move_reveals_discovered_check(board, move, colour)) {
+        return false;
+    }
+    
+    // Move is legal
+    return true;
+}
+
+// New optimized implementation using Direct Legality Check
+void generate_legal_moves_into_new(const Board& board, MoveList& legal) {
+    MoveList pseudo;
+    generate_pseudo_legal_moves_into(board, pseudo);
+    legal.clear();
+    
+    int colour = board.turn;
+    int king_sq = board.king_square(colour);
+    
+    // If king square is invalid, fall back to original implementation
+    if (king_sq == -1) {
+        Board test_board = board;
+        for (const Move& move : pseudo) {
+            UndoInfo undo = make_move(test_board, move);
+            if (!king_in_check(test_board, colour)) {
+                legal.push_back(move);
+            }
+            unmake_move(test_board, move, undo);
+        }
+        return;
+    }
+    
+    // Check if the moving side is currently in check
+    bool in_check = square_attacked_by(board, king_sq, -colour);
+    
+    if (in_check) {
+        // When in check, use a single board copy for all moves
+        // This is the same as the original for in-check positions,
+        // but we save performance for non-check positions
+        Board test_board = board;
+        for (const Move& move : pseudo) {
+            UndoInfo undo = make_move(test_board, move);
+            if (!king_in_check(test_board, colour)) {
+                legal.push_back(move);
+            }
+            unmake_move(test_board, move, undo);
+        }
+    } else {
+        // Not in check - use the optimized direct legality checking
+        for (const Move& move : pseudo) {
+            if (is_move_legal_no_make(board, move, colour)) {
+                legal.push_back(move);
+            }
+        }
+    }
 }
 
 std::vector<Move> generate_legal_moves(const Board& board) {

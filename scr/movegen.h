@@ -84,6 +84,23 @@ struct MoveList {
 std::vector<Move> generate_legal_moves(const Board& board);
 void generate_legal_moves_into(const Board& board, MoveList& legal);
 
+// New optimized implementation (Direct Legality Check)
+void generate_legal_moves_into_new(const Board& board, MoveList& legal);
+
+// A/B Testing: Global flag to select move generation implementation
+// When USE_NEW_LEGAL_MOVE_GEN == true, use the optimized implementation
+// When USE_NEW_LEGAL_MOVE_GEN == false, use the original implementation
+extern bool USE_NEW_LEGAL_MOVE_GEN;
+
+// Wrapper function that selects between old and new implementations based on the flag
+inline void generate_legal_moves_into_ab(const Board& board, MoveList& legal) {
+    if (USE_NEW_LEGAL_MOVE_GEN) {
+        generate_legal_moves_into_new(board, legal);
+    } else {
+        generate_legal_moves_into(board, legal);
+    }
+}
+
 // Generate pseudo-legal moves (correct piece movement, ignoring check)
 std::vector<Move> generate_pseudo_legal_moves(const Board& board);
 void generate_pseudo_legal_moves_into(const Board& board, MoveList& moves);

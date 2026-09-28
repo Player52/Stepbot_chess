@@ -12,8 +12,15 @@ OPENING_BOOK = os.path.join(ROOT, 'opening_book.json')
 
 def engine_path():
     """Return the path to the compiled C++ engine binary."""
-    for name in ('stepbot.exe', 'stepbot'):
+    preferred = 'stepbot.exe' if os.name == 'nt' else 'stepbot'
+    fallback = 'stepbot' if os.name == 'nt' else 'stepbot.exe'
+
+    for name in (preferred, fallback):
         path = os.path.join(SCR, name)
-        if os.path.exists(path):
+        if os.path.isfile(path):
             return path
-    return os.path.join(SCR, 'stepbot.exe')
+
+    raise FileNotFoundError(
+        f"Could not find Stepbot engine in {SCR}. "
+        "Expected 'stepbot.exe' (Windows) or 'stepbot' (Linux/macOS)."
+    )

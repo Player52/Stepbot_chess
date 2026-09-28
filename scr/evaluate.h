@@ -89,6 +89,15 @@ int evaluate(const Board& board);
 int evaluate_handcrafted(const Board& board);
 const EvaluatorBackend& active_evaluator();
 
+// ── Tiered evaluation ──
+// Fast path: incremental material + PST + tempo only, read straight off
+// Board::incremental_eval (maintained by Board::set_piece on every
+// make/unmake, so it is always in sync — no board scan).
+// Used ONLY for quiescence stand-pat; interior nodes keep the full
+// evaluate(). Deliberately minimal — this slot is destined for the NNUE
+// accumulator, so no extra terms are worth gold-plating here.
+int evaluate_cheap(const Board& board);
+
 // Incremental material/PST state. Board::set_piece owns calling these for
 // every normal move, promotion, capture, castling move, and unmake.
 void refresh_incremental_eval_state(Board& board);

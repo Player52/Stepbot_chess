@@ -13,11 +13,24 @@
 CXX = g++
 
 # CXXFLAGS are compiler options:
-#   -O2         = optimise for speed (important for a chess engine)
-#   -std=c++17  = use C++17 standard (needed for structured bindings)
-#   -Wall       = show all warnings (helpful when developing)
-#   -Wextra     = show extra warnings
-CXXFLAGS = -O3 -std=c++17 -Wall -Wextra -pthread
+#   -O3          = optimise for speed (important for a chess engine)
+#   -std=c++17   = use C++17 standard (needed for structured bindings)
+#   -Wall        = show all warnings (helpful when developing)
+#   -Wextra      = show extra warnings
+#   -march=native = tune for the CPU of the machine you BUILD on.
+#                   Rebuild (make clean && make) when moving the binary to a
+#                   different machine, or drop this flag for a portable build.
+#   -flto        = link-time optimisation (cross-TU inlining; must also be
+#                   passed at link time — see LDFLAGS below).
+#   -MMD -MP     = emit per-object .d header-dependency files so `make` knows
+#                   to rebuild an object when a HEADER changes. Without these,
+#                   stale objects silently survive header edits and produce
+#                   phantom benchmark numbers.
+CXXFLAGS = -O3 -march=native -flto -MMD -MP -std=c++17 -Wall -Wextra -pthread
+
+# LDFLAGS: -flto must be repeated here because the link step performs the
+# actual LTO code generation; -march=native keeps the LTO codegen consistent
+# with the compile stage.
 
 # On Windows we want a static binary so it runs without extra DLLs
 # Detect Windows by checking if the shell is cmd/powershell
@@ -25,12 +38,12 @@ ifeq ($(OS), Windows_NT)
     TARGET   = stepbot.exe
     TEST_TARGET = smoke_tests.exe
     BENCH_TARGET = bench_tests.exe
-    LDFLAGS  = -static -lkernel32 -lpthread
+    LDFLAGS  = -static -march=native -flto -lkernel32 -lpthread
 else
     TARGET   = stepbot
     TEST_TARGET = smoke_tests
     BENCH_TARGET = bench_tests
-    LDFLAGS  = -lpthread
+    LDFLAGS  = -march=native -flto -lpthread
 endif
 
 # ─────────────────────────────────────────
@@ -49,19 +62,23 @@ SRCS = main.cpp \
 # Object files — one .o per .cpp
 # This line transforms each "foo.cpp" in SRCS into "foo.o"
 OBJS = $(SRCS:.cpp=.o)
+
+# Header dependency files — one .d per .o, emitted by -MMD -MP above.
+# Included with -include so a missing file is not an error on the first build.
+DEPS = $(OBJS:.o=.d)
 TEST_SRCS = smoke_tests.cpp \
-            board.cpp \
-            movegen.cpp \
-            evaluate.cpp \
-            zobrist.cpp \
-            search.cpp
+	    board.cpp \
+	    movegen.cpp \
+	    evaluate.cpp \
+	    zobrist.cpp \
+	    search.cpp
 
 BENCH_SRCS = bench_tests.cpp \
-             board.cpp \
-             movegen.cpp \
-             evaluate.cpp \
-             zobrist.cpp \
-             search.cpp
+	     board.cpp \
+	     movegen.cpp \
+	     evaluate.cpp \
+	     zobrist.cpp \
+	     search.cpp
 
 # ─────────────────────────────────────────
 # TARGETS
@@ -83,9 +100,9 @@ $(TARGET): $(OBJS)
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-# Clean up compiled files
+# Clean up compiled files (objects, binaries, and .d dependency files)
 clean:
-	rm -f $(OBJS) $(TARGET) $(TEST_TARGET) $(BENCH_TARGET)
+	rm -f $(OBJS) $(DEPS) $(TARGET) $(TEST_TARGET) $(BENCH_TARGET)
 	@echo "  Cleaned."
 
 # Rebuild from scratch
@@ -115,3 +132,10 @@ $(BENCH_TARGET): $(BENCH_SRCS)
 
 # Declare targets that aren't files
 .PHONY: all clean rebuild run test bench bench-multipv bench-timed
+
+# ─────────────────────────────────────────
+# HEADER DEPENDENCIES
+# Pull in the .d files generated during compilation so that editing any
+# header correctly triggers recompilation of every dependent object.
+# ─────────────────────────────────────────
+-include $(OBJS:.o=.d)

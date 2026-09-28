@@ -112,11 +112,18 @@ struct Board {
     Board();
 
     // Methods — like Python methods but declared here, defined in board.cpp
-    int  get_piece(int sq) const;
+    int  get_piece(int sq) const { return squares[sq]; }
     void set_piece(int sq, int piece);
-    bool is_empty(int sq) const;
-    int  colour_at(int sq) const;   // Returns WHITE, BLACK, or 0
-    int  king_square(int colour) const;
+    bool is_empty(int sq) const { return squares[sq] == EMPTY; }
+    int  colour_at(int sq) const {   // Returns WHITE, BLACK, or 0
+        int piece = squares[sq];
+        if (piece > 0) return WHITE;
+        if (piece < 0) return BLACK;
+        return 0;
+    }
+    int  king_square(int colour) const {
+        return (colour == WHITE) ? white_king_sq : black_king_sq;
+    }
     void refresh_king_squares();
     void refresh_incremental_state();
     void nnue_feature_removed(int sq, int piece);

@@ -1207,3 +1207,21 @@ const EvaluatorBackend& active_evaluator() {
 int evaluate(const Board& board) {
     return active_evaluator().evaluate_position(board);
 }
+
+// ─────────────────────────────────────────
+// TIERED EVAL — CHEAP PATH
+// Material + PST + tempo, all incremental: no board scan, no ray walks,
+// no pawn-structure passes. Same tapered blend and tempo sign convention
+// as the full evaluator's first and last terms, so the two tiers stay
+// comparable in scale (cheap is "full eval minus the expensive middle").
+// Stand-pat-only consumer: quiescence.
+// ─────────────────────────────────────────
+int evaluate_cheap(const Board& board) {
+    const IncrementalEvalState& state = board.incremental_eval;
+    int phase = state.phase;
+    int score = (state.mg_score * phase
+                 + state.eg_score * (MAX_PHASE - phase)) / MAX_PHASE;
+    int tempo = (TEMPO_MG * phase) / MAX_PHASE;
+    score += (board.turn == WHITE) ? tempo : -tempo;
+    return score;
+}

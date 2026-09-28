@@ -59,10 +59,6 @@ void Board::setup_starting_position() {
 
 // 'const' after the method name means "this method doesn't modify the board"
 // Like a Python method that only reads self but never writes to it
-int Board::get_piece(int sq) const {
-    return squares[sq];
-}
-
 void Board::set_piece(int sq, int piece) {
     int old_piece = squares[sq];
     if (old_piece == piece)
@@ -89,21 +85,6 @@ void Board::set_piece(int sq, int piece) {
         incremental_eval_add_piece(incremental_eval, sq, piece);
         nnue_feature_added(sq, piece);
     }
-}
-
-bool Board::is_empty(int sq) const {
-    return squares[sq] == EMPTY;
-}
-
-int Board::colour_at(int sq) const {
-    int piece = squares[sq];
-    if (piece > 0) return WHITE;
-    if (piece < 0) return BLACK;
-    return 0;   // Empty
-}
-
-int Board::king_square(int colour) const {
-    return (colour == WHITE) ? white_king_sq : black_king_sq;
 }
 
 void Board::refresh_king_squares() {

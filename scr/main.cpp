@@ -238,8 +238,19 @@ struct UCIEngine {
         std::lock_guard<std::mutex> lock(search_mutex);
         if (search_thread.joinable()) {
             suppress_bestmove.store(!emit_bestmove, std::memory_order_relaxed);
-            if (request_stop)
+            if (request_stop) {
                 smp.stop.store(true, std::memory_order_relaxed);
+                // find_best_move now clears the shared stop flag at entry
+                // (self-contained reset for direct API callers). A stop that
+                // lands while the search thread has not reached that point
+                // would be swallowed by the reset — so keep re-asserting the
+                // flag until the thread finishes. This keeps a pipelined
+                // "go"+"stop" (or "quit") from ever being lost.
+                while (search_running.load(std::memory_order_relaxed)) {
+                    smp.stop.store(true, std::memory_order_relaxed);
+                    std::this_thread::yield();
+                }
+            }
             search_thread.join();
         }
         search_running.store(false, std::memory_order_relaxed);
@@ -269,7 +280,8 @@ struct UCIEngine {
         else if (cmd == "print")      board.print_board();
         else if (cmd == "fen")        { write_output(board_to_fen(board) + "\n"); }
         else if (cmd == "moves") {
-            auto moves = generate_legal_moves(board);
+            MoveList moves;
+            generate_legal_moves_into_new(board, moves);
             std::ostringstream out;
             out << "Legal moves (" << moves.size() << "): ";
             for (const auto& m : moves) out << m.to_uci() << " ";
@@ -345,7 +357,8 @@ struct UCIEngine {
     }
 
     bool legal_move_from_uci(const Board& source, const std::string& uci, Move& out) {
-        auto legal = generate_legal_moves(source);
+        MoveList legal;
+        generate_legal_moves_into_new(source, legal);
         for (const Move& move : legal) {
             if (move.to_uci() == uci) {
                 out = move;
@@ -356,14 +369,15 @@ struct UCIEngine {
     }
 
     Move legal_bestmove_or_fallback(const Board& source, const Move& requested) {
-        auto legal = generate_legal_moves(source);
+        MoveList legal;
+        generate_legal_moves_into_new(source, legal);
         if (legal.empty()) return Move(0, 0);
 
         for (const Move& move : legal) {
             if (move == requested) return requested;
         }
 
-        return legal.front();
+        return legal[0];
     }
 
     void write_bestmove(const Board& source, const Move& requested) {
