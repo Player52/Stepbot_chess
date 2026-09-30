@@ -247,11 +247,12 @@ Move Searcher::find_best_move(const Board& board, int max_depth,
     stop_flag = stop;
     output_mutex = output_lock;
 
-    // NOTE: we deliberately do NOT clear the external stop flag at entry.
-    // A pre-existing stop request must be honoured (see smoke test
-    // "search does not clear an existing external stop request"). The UCI
-    // path in main.cpp re-asserts the stop flag until the search thread has
-    // finished, so a stop landing mid-search can never be swallowed.
+    // Reset the shared stop flag at entry. Previous searches set it to true
+    // on exit (to signal helpers to stop), so without this reset a direct
+    // API caller that reuses the same flag would get an instantly-aborted
+    // search. Clearing it here makes find_best_move self-contained; the
+    // UCI path (main.cpp resets it before launching helpers) is unaffected.
+    if (stop_flag) stop_flag->store(false, std::memory_order_relaxed);
 
     multipv = std::max(1, std::min(5, multipv));
     position_history = history;
@@ -510,13 +511,9 @@ std::vector<RootLine> Searcher::search_root_multipv(Board& board,
 int Searcher::alphabeta(Board& board, Hash hash,
                          int depth, int alpha, int beta, int ply,
                          Move prev_move, bool cut_node, int prev_static_eval) {
-    // Scratch buffer handed to quiescence() when this node prunes straight
-    // into it. Local (stack) — never allocated on the heap.
-    NodeMoveStack qs_scratch;
-
     if (time_up()) return alpha;
     if (ply >= MAX_DEPTH - 1)
-        return quiescence(board, hash, alpha, beta, ply, 0, &qs_scratch);
+        return quiescence(board, hash, alpha, beta, ply);
 
     nodes_searched++;
 
@@ -529,12 +526,6 @@ int Searcher::alphabeta(Board& board, Hash hash,
     (void)ps_prev2;
     ps.reduction = 0;
     int prior_reduction = ps_prev.reduction;
-
-    // Per-ply fixed-size move buffers — replaces the per-node std::vectors
-    // that used to be heap-allocated on every alphabeta call. Reset at entry;
-    // child nodes use their own ply slots, so no save/restore is needed.
-    NodeMoveStack& ms = move_stacks[safe_ply];
-    ms.reset_node();
 
     // ── Repetition Detection ──
     // Check game history AND the current search path.
@@ -604,7 +595,7 @@ int Searcher::alphabeta(Board& board, Hash hash,
     // drop straight into capture-only quiescence while in check).
     if (depth <= 0) {
         if (!king_in_check(board, board.turn))
-            return quiescence(board, hash, alpha, beta, ply, 0, &qs_scratch);
+            return quiescence(board, hash, alpha, beta, ply);
         depth = 1;
     }
 
@@ -658,7 +649,7 @@ int Searcher::alphabeta(Board& board, Hash hash,
     // Only at depth 1 to avoid false pruning at higher depths.
     if (!in_check && depth == 1
         && static_eval < alpha - 400)
-        return quiescence(board, hash, alpha, beta, ply, 0, &qs_scratch);
+        return quiescence(board, hash, alpha, beta, ply);
 
     // ── Internal Iterative Reduction (IIR) ──
     // At depth >= 6 with no TT move, our move ordering is poor.
@@ -685,7 +676,7 @@ int Searcher::alphabeta(Board& board, Hash hash,
                    + (improving        ? -30 : 30)
                    + (opponent_worsening ? -20 : 20);
         if (static_eval + margin <= alpha)
-            return quiescence(board, hash, alpha, beta, ply, 0, &qs_scratch);
+            return quiescence(board, hash, alpha, beta, ply);
     }
 
     // ── Null Move Pruning ──
@@ -758,9 +749,11 @@ int Searcher::alphabeta(Board& board, Hash hash,
     bool found_best = false;
     int  quiet_count = 0;  // LMP: count of quiet moves searched
 
-    // Searched moves lists for batch history penalisation now live in the
-    // per-ply fixed-size buffers (ms.quiets_searched / ms.captures_searched)
-    // — no per-node heap allocations.
+    // Searched moves lists for batch history penalisation
+    std::vector<Move> quiets_searched;    // non-best quiet moves
+    std::vector<Move> captures_searched;  // non-best capture moves
+    quiets_searched.reserve(32);
+    captures_searched.reserve(16);
 
     for (int move_idx = 0; move_idx < moves.size(); move_idx++) {
         const Move& move = moves[move_idx];
@@ -964,14 +957,12 @@ int Searcher::alphabeta(Board& board, Hash hash,
                 update_capture_history(board, move, depth, true);
             update_countermove(prev_move, move, board);
 
-            // Batch penalise all non-best searched moves (fixed-size buffers)
+            // Batch penalise all non-best searched moves
             int malus = std::min(depth * depth, 400);
-            for (int i = 0; i < ms.num_quiets_searched; i++) {
-                const Move& qm = ms.quiets_searched[i];
+            for (const Move& qm : quiets_searched) {
                 update_history_gravity(history[qm.from_sq][qm.to_sq], -malus);
             }
-            for (int i = 0; i < ms.num_captures_searched; i++) {
-                const Move& cm = ms.captures_searched[i];
+            for (const Move& cm : captures_searched) {
                 update_capture_history(board, cm, depth, false);
             }
 
@@ -994,14 +985,11 @@ int Searcher::alphabeta(Board& board, Hash hash,
             (void)0;
         }
         // Track non-best searched moves for batch penalisation
-        // (fixed-size per-ply buffers — no heap traffic)
         if (move != best_move) {
             if (is_capture) {
-                if (ms.num_captures_searched < MAX_MOVES)
-                    ms.captures_searched[ms.num_captures_searched++] = move;
+                captures_searched.push_back(move);
             } else {
-                if (ms.num_quiets_searched < MAX_MOVES)
-                    ms.quiets_searched[ms.num_quiets_searched++] = move;
+                quiets_searched.push_back(move);
             }
         }
         // Individual capture history update
@@ -1023,14 +1011,7 @@ int Searcher::alphabeta(Board& board, Hash hash,
 }
 
 int Searcher::quiescence(Board& board, Hash hash, int alpha, int beta,
-                          int ply, int qcheck_depth,
-                          NodeMoveStack* qs_stack) {
-    // Per-call fixed-size buffers (no heap allocations). Recursion into
-    // child qsearch nodes passes a fresh local buffer (see below), because
-    // qsearch plies extend beyond the alphabeta ply counter.
-    NodeMoveStack& qms = *qs_stack;
-    qms.reset_qs();
-
+                          int ply, int qcheck_depth) {
     if (time_up()) return alpha;
 
     nodes_searched++;
@@ -1090,13 +1071,19 @@ int Searcher::quiescence(Board& board, Hash hash, int alpha, int beta,
         return alpha;
     }
 
-    // Fixed-size per-call buffers (NodeMoveStack) — replaces the old
-    // std::vector<Tactical>/std::vector<Move> that heap-allocated on every
-    // qsearch node.
-    using Tactical = NodeMoveStack::Tactical;
+    struct Tactical {
+        int  order_score;   // MVV-LVA + capture history — ordering key only
+        Move m;
+        bool is_capture;
+    };
+    std::vector<Tactical> tactical;
+    std::vector<Move> quiet_checks;
 
     MoveList pseudo_moves;
     generate_pseudo_legal_moves_into(board, pseudo_moves);
+    tactical.reserve(pseudo_moves.size());
+    if (qcheck_depth < QCHECK_MAX)
+        quiet_checks.reserve(8);
     Board legality_board = board;
 
     for (const Move& m : pseudo_moves) {
@@ -1122,22 +1109,19 @@ int Searcher::quiescence(Board& board, Hash hash, int alpha, int beta,
             // Order by MVV-LVA + capture history — no SEE here. The
             // bad-capture filter in the loop below computes SEE lazily,
             // once, and only for captures that survive to be searched.
-            if (qms.num_tactical < MAX_MOVES)
-                qms.tactical[qms.num_tactical++] = {
-                    capture_order_score(capture_history, board, m), m, capture};
+            tactical.push_back({capture_order_score(capture_history, board, m),
+                                m, capture});
         } else if (gives_check) {
-            if (qms.num_quiet_checks < MAX_MOVES)
-                qms.quiet_checks[qms.num_quiet_checks++] = m;
+            quiet_checks.push_back(m);
         }
     }
 
-    std::sort(qms.tactical, qms.tactical + qms.num_tactical,
+    std::sort(tactical.begin(), tactical.end(),
               [](const Tactical& a, const Tactical& b) {
                   return a.order_score > b.order_score;
               });
 
-    for (int ti = 0; ti < qms.num_tactical; ti++) {
-        const Tactical& t = qms.tactical[ti];
+    for (const Tactical& t : tactical) {
         if (time_up()) break;
         if (t.is_capture) {
             // qsearch filter — the one SEE decision left in qsearch.
@@ -1152,25 +1136,22 @@ int Searcher::quiescence(Board& board, Hash hash, int alpha, int beta,
                                         undo.en_passant_sq,
                                         undo.castling_rights,
                                         undo.captured_piece);
-        NodeMoveStack child_qms;
         int score = -quiescence(board, new_hash, -beta, -alpha,
-                                ply + 1, qcheck_depth + 1, &child_qms);
+                                ply + 1, qcheck_depth + 1);
         unmake_move(board, t.m, undo);
         if (score >= beta) return beta;
         alpha = std::max(alpha, score);
     }
 
     if (qcheck_depth < QCHECK_MAX) {
-        for (int qi = 0; qi < qms.num_quiet_checks; qi++) {
-            const Move& m = qms.quiet_checks[qi];
+        for (const Move& m : quiet_checks) {
             if (time_up()) break;
             UndoInfo undo = make_move(board, m);
             Hash nh = update_hash(hash, board, m,
                                   undo.en_passant_sq,
                                   undo.castling_rights,
                                   undo.captured_piece);
-            NodeMoveStack child_qms;
-            int sc = -quiescence(board, nh, -beta, -alpha, ply + 1, qcheck_depth + 1, &child_qms);
+            int sc = -quiescence(board, nh, -beta, -alpha, ply + 1, qcheck_depth + 1);
             unmake_move(board, m, undo);
             if (sc >= beta) return beta;
             alpha = std::max(alpha, sc);
@@ -1259,6 +1240,22 @@ void Searcher::order_moves(const Board& board,
 
     for (int i = 0; i < scored_count; i++)
         moves[i] = scored[i].move;
+}
+
+std::vector<Move> Searcher::order_moves(const Board& board,
+                                         std::vector<Move>& moves,
+                                         int ply,
+                                         const Move* tt_move,
+                                         const Move* prev_move) {
+    MoveList fixed;
+    for (const Move& move : moves)
+        fixed.push_back(move);
+    order_moves(board, fixed, ply, tt_move, prev_move);
+    moves.clear();
+    moves.reserve(fixed.size());
+    for (const Move& move : fixed)
+        moves.push_back(move);
+    return moves;
 }
 
 void Searcher::update_killers(const Move& move, int ply) {

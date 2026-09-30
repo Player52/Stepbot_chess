@@ -149,49 +149,6 @@ struct PlyData {
     bool  tt_pv         = false;  // Was this node on a TT PV path?
 };
 
-// ── Per-ply fixed-size move buffers ──
-// alphabeta() and quiescence() used to allocate fresh std::vectors on every
-// node (quiets/captures searched lists, tactical/quiet-check lists), causing
-// repeated heap malloc/free churn in the hottest part of the search. These
-// POD structs hold the same data in fixed-size stack arrays:
-//   - one instance per ply lives in Searcher::move_stacks (no per-node alloc)
-//   - quiescence uses its own local instance, because qsearch extends the
-//     ply counter beyond the alphabeta ply it was called from
-struct NodeMoveStack {
-    // alphabeta: non-best moves that caused a beta cutoff batch penalty
-    Move quiets_searched[MAX_MOVES];
-    int  num_quiets_searched = 0;
-    Move captures_searched[MAX_MOVES];
-    int  num_captures_searched = 0;
-
-    // quiescence: captures/queen-promotions + quiet checks
-    struct Tactical {
-        int  order_score;   // MVV-LVA + capture history — ordering key only
-        Move m;
-        bool is_capture;
-    };
-    Tactical tactical[MAX_MOVES];
-    int      num_tactical = 0;
-    Move     quiet_checks[MAX_MOVES];
-    int      num_quiet_checks = 0;
-
-    void reset_node() {
-        num_quiets_searched   = 0;
-        num_captures_searched = 0;
-    }
-    void reset_qs() {
-        num_tactical    = 0;
-        num_quiet_checks = 0;
-    }
-
-    // Static scratch slot used only by the rare default-argument call at an
-    // overflowing ply (ply >= MAX_DEPTH + 4). Never touched in normal search.
-    static NodeMoveStack& overflow_slot() {
-        static NodeMoveStack slot;
-        return slot;
-    }
-};
-
 struct RootLine {
     Move        move;
     int         score = 0;
@@ -243,12 +200,6 @@ struct Searcher {
     // Tracks static_eval, stat_score, reduction, in_check, tt_pv
     // across recursive alphabeta calls.
     PlyData ply_stack[MAX_DEPTH + 4];
-
-    // ── Per-ply fixed-size move buffers ──
-    // Replaces the per-node std::vector allocations in alphabeta() with
-    // pre-allocated arrays (one struct per ply). Reset at node entry; no
-    // heap traffic during the search.
-    NodeMoveStack move_stacks[MAX_DEPTH + 4];
 
     int    nodes_searched;
     int    tt_hits;
@@ -360,13 +311,8 @@ struct Searcher {
                   int  prev_static_eval = 0);
 
     // ply: distance from root (mate scores); qcheck_depth: quiet-check plies in q-search
-    // qs_stack: per-call fixed-size buffers for tactical/quiet-check moves.
-    // Defaults to a static scratch slot only for the rare overflow ply
-    // (ply >= MAX_DEPTH + 4); every normal call site passes an explicit
-    // stack-local NodeMoveStack, so there are no per-node heap allocations.
     int quiescence(Board& board, Hash hash, int alpha, int beta,
-                   int ply, int qcheck_depth = 0,
-                   NodeMoveStack* qs_stack = &NodeMoveStack::overflow_slot());
+                   int ply, int qcheck_depth = 0);
 
     // order_moves now takes the previous move for countermove lookup
     void order_moves(const Board& board,
@@ -374,6 +320,11 @@ struct Searcher {
                      int ply,
                      const Move* tt_move  = nullptr,
                      const Move* prev_move = nullptr);
+    std::vector<Move> order_moves(const Board& board,
+                                  std::vector<Move>& moves,
+                                  int ply,
+                                  const Move* tt_move  = nullptr,
+                                  const Move* prev_move = nullptr);
 
     void update_killers(const Move& move, int ply);
     void update_history(const Board& board, const Move& move,
